@@ -1,0 +1,12 @@
+[project]
+name = "apa-travel-backend"
+version = "0.1.0"
+description = "APA Insurance travel request and approval backend"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=5.2.8,<5.3",
+    "python-dotenv>=1.1,<2",
+]
+
+[tool.uv]
+package = false
