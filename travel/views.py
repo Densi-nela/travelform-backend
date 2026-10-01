@@ -5,7 +5,7 @@ from functools import wraps
 from uuid import UUID
 from django.contrib.auth import authenticate, login, logout
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.db.models import Count, Q
 from django.db.models.functions import TruncDate, ExtractMonth
 from django.http import JsonResponse
@@ -57,6 +57,15 @@ def serialize(trip, detail=False):
                       travellers=[{key: getattr(p, key) for key in ['name', 'email', 'departure_date',
                                   'departure_time', 'return_date', 'return_time', 'ticket_class']} for p in people])
     return result
+
+
+@require_GET
+def health(request):
+    try:
+        TravelRequest.objects.exists()
+    except DatabaseError:
+        return JsonResponse({'status': 'unavailable'}, status=503)
+    return JsonResponse({'status': 'ok'})
 
 
 @require_GET

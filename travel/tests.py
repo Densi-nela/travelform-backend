@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
+from django.db import DatabaseError
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from .models import TravelRequest, AirTraveller, Notification
@@ -12,6 +13,18 @@ from .notifications import deliver
 
 @override_settings(NOTIFICATION_MODE='console')
 class TravelWorkflowTests(TestCase):
+    def test_health_is_public_and_not_cached(self):
+        response = self.client.get('/api/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok'})
+        self.assertEqual(response['Cache-Control'], 'no-store')
+
+    @patch('travel.views.TravelRequest.objects.exists', side_effect=DatabaseError('private database detail'))
+    def test_health_reports_database_unavailable_without_details(self, exists):
+        response = self.client.get('/api/health/')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {'status': 'unavailable'})
+
     def setUp(self):
         departure = timezone.localdate() + timedelta(days=10)
         self.payload = {'submission_key': str(uuid.uuid4()), 'destination': 'Mombasa, Kenya',
