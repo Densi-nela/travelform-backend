@@ -8,11 +8,11 @@ from django.core.paginator import Paginator
 from django.db import DatabaseError, transaction
 from django.db.models import Count, Q
 from django.db.models.functions import TruncDate, ExtractMonth
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
-from .models import TravelRequest, AirTraveller, Notification
+from .models import TravelRequest, AirTraveller, Notification, Ticket
 from .notifications import deliver_many
 from .validation import submission, text
 
@@ -50,11 +50,11 @@ def serialize(trip, detail=False):
               'travel_type': trip.travel_type, 'applicant_name': trip.applicant_name,
               'applicant_email': trip.applicant_email, 'supervisor_email': trip.supervisor_email,
               'destination': trip.destination, 'status': trip.status, 'created_at': trip.created_at,
-              'decided_at': trip.decided_at, 'traveller_count': len(people),
+              'supervisor_status': trip.supervisor_status, 'supervisor_decided_at': trip.supervisor_decided_at, 'decided_at': trip.decided_at, 'traveller_count': len(people),
               'departure_date': min((p.departure_date for p in people), default=None)}
     if detail:
         result.update(event_description=trip.event_description, rejection_reason=trip.rejection_reason,
-                      travellers=[{key: getattr(p, key) for key in ['name', 'email', 'departure_date',
+                      travellers=[{key: getattr(p, key) for key in ['id', 'name', 'email', 'departure_date',
                                   'departure_time', 'return_date', 'return_time', 'ticket_class']} for p in people])
     return result
 
@@ -119,7 +119,7 @@ def submit(request):
 
 @require_http_methods(['GET', 'POST'])
 def review(request, token):
-    trip = TravelRequest.objects.prefetch_related('travellers').filter(approval_token=token).first()
+    trip = TravelRequest.objects.prefetch_related('travellers').filter(approval_token=token).exclude(supervisor_status='not_required').first()
     if trip is None:
         return error('This review link is invalid.', 404)
     if request.method == 'GET':
@@ -137,10 +137,12 @@ def review(request, token):
     with transaction.atomic():
         # Compare-and-set prevents two tabs or repeated POSTs overwriting a decision.
         changed = TravelRequest.objects.filter(pk=trip.pk, status='pending').update(
-            status=status, rejection_reason=reason, decided_at=timezone.now())
+            status='awaiting_admin' if status == 'approved' else 'rejected', supervisor_status=status,
+            supervisor_decided_at=timezone.now(), rejection_reason=reason,
+            decided_at=timezone.now() if status == 'rejected' else None)
         if not changed:
             return error('This request has already been decided. Refresh to see the result.', 409)
-        notice = Notification.objects.create(request=trip, event='decision', recipient=trip.applicant_email)
+        notice = Notification.objects.create(request=trip, event='decision', recipient=trip.applicant_email, payload={'status': 'awaiting_admin' if status == 'approved' else 'rejected', 'reason': reason})
         transaction.on_commit(lambda: deliver_many([notice.id]))
     trip.refresh_from_db()
     return JsonResponse(serialize(trip, True))
@@ -153,7 +155,10 @@ def requests_queryset():
 @require_GET
 @staff_only
 def requests_list(request):
-    qs = requests_queryset()
+    try:
+        qs = date_scope(requests_queryset(), request)
+    except ValueError as exc:
+        return error(str(exc))
     search = request.GET.get('search', '').strip()[:200]
     if search:
         qs = qs.filter(Q(applicant_name__icontains=search) | Q(applicant_email__icontains=search) |
@@ -176,6 +181,8 @@ def request_detail(request, pk):
     if trip is None:
         return error('Request not found.', 404)
     result = serialize(trip, True)
+    result['admin_message'] = trip.admin_message
+    result['tickets'] = list(Ticket.objects.filter(traveller__request=trip).values('id', 'traveller_id', 'filename', 'size'))
     result['notifications'] = list(trip.notifications.values('event', 'recipient', 'delivered_at', 'attempts', 'last_error'))
     return JsonResponse(result)
 
@@ -192,21 +199,40 @@ def person_history(request):
                          'results': [serialize(t) for t in qs[:50]]})
 
 
+def date_scope(qs, request):
+    year = request.GET.get('year')
+    month = request.GET.get('month')
+    try:
+        if year:
+            value = int(year)
+            if not 1900 <= value <= 9998:
+                raise ValueError
+            return qs.filter(created_at__year=value)
+        if month:
+            value = date.fromisoformat(month + '-01')
+            return qs.filter(created_at__year=value.year, created_at__month=value.month)
+    except (ValueError, TypeError):
+        raise ValueError('Choose a valid month or year.')
+    return qs
+
+
 @require_GET
 @staff_only
 def metrics(request):
     try:
+        qs = date_scope(TravelRequest.objects.all(), request)
         month = date.fromisoformat(request.GET.get('month', timezone.localdate().strftime('%Y-%m')) + '-01')
     except ValueError:
-        return error('Month must use YYYY-MM.')
-    qs = TravelRequest.objects.all()
+        return error('Choose a valid month or year.')
     monthly = qs.filter(created_at__year=month.year, created_at__month=month.month)
     daily = {row['day'].day: row['total'] for row in monthly.annotate(day=TruncDate('created_at')).values('day').annotate(total=Count('id')).order_by('day')}
-    counts = {s: qs.filter(status=s).count() for s in TravelRequest.Status.values}
-    return JsonResponse({'total': qs.count(), 'counts': counts, 'travellers': AirTraveller.objects.count(),
-                         'month_total': monthly.count(), 'month': month.strftime('%Y-%m'),
-                         'notification_failures': Notification.objects.filter(delivered_at__isnull=True).count(),
-                         'daily': [{'day': i, 'requests': daily.get(i, 0)} for i in range(1, calendar.monthrange(month.year, month.month)[1] + 1)]})
+    buckets = {row['month']: row['total'] for row in qs.order_by().annotate(month=ExtractMonth('created_at')).values('month').annotate(total=Count('pk'))}
+    return JsonResponse({'total': qs.count(), 'counts': {s: qs.filter(status=s).count() for s in TravelRequest.Status.values},
+        'travellers': AirTraveller.objects.filter(request__in=qs).count(), 'month_total': monthly.count(), 'month': month.strftime('%Y-%m'),
+        'available_years': [d.year for d in TravelRequest.objects.datetimes('created_at', 'year', order='DESC')],
+        'notification_failures': Notification.objects.filter(request__in=qs, delivered_at__isnull=True).count(),
+        'daily': [{'day': i, 'requests': daily.get(i, 0)} for i in range(1, calendar.monthrange(month.year, month.month)[1]+1)],
+        'monthly': [{'day': calendar.month_abbr[i], 'requests': buckets.get(i, 0)} for i in range(1,13)]})
 
 
 @require_GET
@@ -246,3 +272,112 @@ def analytics(request):
                          'monthly': [{'month': i, 'label': calendar.month_abbr[i], 'requests': buckets.get(i, 0)}
                                      for i in range(1, 13)],
                          'top_destinations': destinations, 'travel_types': travel_types})
+
+
+@require_POST
+@staff_only
+def admin_submit(request):
+    try:
+        fields, people = submission(body(request), admin=True)
+    except ValueError as exc:
+        return error(str(exc))
+    with transaction.atomic():
+        trip, created = TravelRequest.objects.get_or_create(submission_key=fields['submission_key'],
+            defaults={**fields, 'status': 'awaiting_admin', 'supervisor_status': 'not_required'})
+        if created:
+            AirTraveller.objects.bulk_create([AirTraveller(request=trip, **p) for p in people])
+            notice = Notification.objects.create(request=trip, event='applicant_receipt', recipient=trip.applicant_email,
+                payload={'status': 'awaiting_admin'})
+            transaction.on_commit(lambda: deliver_many([notice.id]))
+    return JsonResponse(serialize(trip, True), status=201 if created else 200)
+
+
+@require_POST
+@staff_only
+def admin_decision(request, pk):
+    try:
+        data = body(request)
+        status = data.get('status')
+        if status not in ['approved', 'rejected']:
+            raise ValueError('Choose approve or reject.')
+        message = text(data, 'message', 5000, optional=True)
+        reason = text(data, 'reason', 2000, optional=True) if status == 'rejected' else ''
+        personal = data.get('traveller_messages', {})
+        if not isinstance(personal, dict):
+            raise ValueError('Invalid traveller messages.')
+        personal = {str(k): text({'message': v}, 'message', 5000, optional=True) for k, v in personal.items()}
+    except ValueError as exc:
+        return error(str(exc))
+    with transaction.atomic():
+        # This write locks the request before checking travellers/tickets as well.
+        changed = TravelRequest.objects.filter(pk=pk, status='awaiting_admin').update(
+            status=status, rejection_reason=reason, admin_message=message, decided_at=timezone.now(), admin_decided_by=request.user)
+        if not changed:
+            return error('Only requests awaiting admin action can be decided. Refresh to see the latest status.', 409)
+        trip = TravelRequest.objects.get(pk=pk)
+        people = list(trip.travellers.all())
+        if set(personal) - {str(p.id) for p in people}:
+            transaction.set_rollback(True)
+            return error('A traveller does not belong to this request.')
+        recipients = {trip.applicant_email.lower(), *(p.email.lower() for p in people)}
+        if trip.supervisor_email:
+            recipients.add(trip.supervisor_email.lower())
+        notices = []
+        for recipient in sorted(recipients):
+            own = [p for p in people if p.email.lower() == recipient]
+            notes = [personal.get(str(p.id), '') for p in own]
+            ticket_ids = list(Ticket.objects.filter(traveller__in=own).values_list('id', flat=True)) if status == 'approved' else []
+            payload = {'status': status, 'reason': reason, 'message': '\n\n'.join(v for v in [message, *notes] if v),
+                'ticket_ids': ticket_ids, 'employee_name': own[0].name if own else trip.applicant_name}
+            notices.append(Notification.objects.create(request=trip, event='admin_decision', recipient=recipient, payload=payload).id)
+        transaction.on_commit(lambda: deliver_many(notices))
+    return JsonResponse(serialize(trip, True))
+
+
+@require_POST
+@staff_only
+def upload_ticket(request, pk, traveller_id):
+    upload = request.FILES.get('ticket')
+    if not upload or upload.size > 5 * 1024 * 1024:
+        return error('Choose a PDF, PNG or JPEG ticket up to 5 MB.')
+    content = upload.read()
+    if content.startswith(b'%PDF-'):
+        mime, extension = 'application/pdf', '.pdf'
+    elif content.startswith(b'\x89PNG\r\n\x1a\n'):
+        mime, extension = 'image/png', '.png'
+    elif content.startswith(b'\xff\xd8\xff'):
+        mime, extension = 'image/jpeg', '.jpg'
+    else:
+        return error('Tickets must be PDF, PNG or JPEG files.')
+    from pathlib import Path
+    filename = Path(upload.name).stem[:180] + extension
+    with transaction.atomic():
+        if not TravelRequest.objects.filter(pk=pk, status='awaiting_admin').update(status='awaiting_admin'):
+            return error('Tickets can only be changed while awaiting admin action.', 409)
+        person = AirTraveller.objects.filter(pk=traveller_id, request_id=pk).first()
+        if person is None:
+            return error('Traveller not found.', 404)
+        sizes = list(Ticket.objects.filter(traveller__request_id=pk).values_list('size', flat=True))
+        if len(sizes) >= 50 or sum(sizes) + len(content) > 20 * 1024 * 1024:
+            return error('A request supports up to 50 tickets and 20 MB of attachments in total.')
+        ticket = Ticket.objects.create(traveller=person, filename=filename, content_type=mime, content=content, size=len(content))
+    return JsonResponse({'id': ticket.id, 'filename': ticket.filename}, status=201)
+
+
+@require_http_methods(['GET', 'DELETE'])
+@staff_only
+def ticket_detail(request, pk):
+    ticket = Ticket.objects.select_related('traveller').filter(pk=pk).first()
+    if ticket is None:
+        return error('Ticket not found.', 404)
+    if request.method == 'DELETE':
+        with transaction.atomic():
+            if not TravelRequest.objects.filter(pk=ticket.traveller.request_id, status='awaiting_admin').update(status='awaiting_admin'):
+                return error('Tickets on a decided request cannot be changed.', 409)
+            ticket.delete()
+        return JsonResponse({'ok': True})
+    from django.utils.http import content_disposition_header
+    response = HttpResponse(bytes(ticket.content), content_type=ticket.content_type)
+    response['Content-Disposition'] = content_disposition_header(True, ticket.filename)
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response

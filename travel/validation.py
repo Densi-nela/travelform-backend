@@ -21,7 +21,7 @@ def email(data, key):
     return value
 
 
-def submission(data):
+def submission(data, admin=False):
     if not isinstance(data, dict):
         raise ValueError('Expected a JSON object.')
     try:
@@ -31,7 +31,7 @@ def submission(data):
     if data.get('travel_type', 'air') != 'air':
         raise ValueError('Only air travel is currently supported.')
     trip = {'submission_key': key, 'applicant_name': text(data, 'applicant_name', 150),
-            'applicant_email': email(data, 'applicant_email'), 'supervisor_email': email(data, 'supervisor_email'),
+            'applicant_email': email(data, 'applicant_email'), 'supervisor_email': '' if admin else email(data, 'supervisor_email'),
             'destination': text(data, 'destination', 200), 'event_description': text(data, 'event_description', 5000)}
     if trip['applicant_email'] == trip['supervisor_email']:
         raise ValueError('Supervisor email must differ from applicant email.')

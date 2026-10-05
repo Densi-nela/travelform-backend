@@ -76,15 +76,17 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(self.client.get(url).json()['status'], 'pending')
         with self.captureOnCommitCallbacks(execute=True):
             response = self.post(url, {'status': 'approved'})
-        self.assertEqual(response.json()['status'], 'approved')
-        self.assertEqual(send.call_args.kwargs['status'], 'approved')
+        self.assertEqual(response.json()['status'], 'awaiting_admin')
+        self.assertEqual(send.call_args.kwargs['status'], 'awaiting_admin')
         self.assertEqual(send.call_args.args[0], 'jane@example.com')
         self.assertIsNone(send.call_args.args[3])
         self.assertEqual(self.post(url, {'status': 'rejected'}).status_code, 409)
         self.assertEqual(Notification.objects.filter(event='decision').count(), 1)
         trip.refresh_from_db()
-        self.assertEqual(trip.status, 'approved')
-        self.assertIsNotNone(trip.decided_at)
+        self.assertEqual(trip.status, 'awaiting_admin')
+        self.assertIsNone(trip.decided_at)
+        self.assertEqual(trip.supervisor_status, "approved")
+        self.assertIsNotNone(trip.supervisor_decided_at)
 
     def test_reject_with_and_without_reason(self):
         trip = self.create()
@@ -224,7 +226,7 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(data['monthly'][0]['requests'], 1)
         self.assertEqual(data['monthly'][11]['requests'], 1)
         self.assertEqual(data['monthly'][1]['requests'], 0)
-        self.assertEqual(data['counts'], {'pending': 1, 'approved': 1, 'rejected': 0})
+        self.assertEqual(data['counts'], {'pending': 1, 'awaiting_admin': 0, 'approved': 1, 'rejected': 0})
         self.assertEqual(self.client.get('/api/admin/analytics/?year=2026').json()['total'], 1)
         self.assertIn(2025, data['available_years'])
 
@@ -282,3 +284,140 @@ class TravelWorkflowTests(TestCase):
         person = self.client.get('/api/admin/analytics/?email=jane@example.com').json()
         self.assertEqual(person['travel_types'], [{'travel_type': 'air', 'requests': 1}])
         self.assertEqual(sum(t['requests'] for t in data['travel_types']), data['filtered_total'])
+
+
+    def awaiting_admin(self):
+        trip = self.create()
+        self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'})
+        trip.refresh_from_db()
+        return trip
+
+    @patch('travel.notifications.send_notification_email')
+    def test_admin_approval_fanout_private_tickets_and_retry_snapshot(self, send):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import Ticket
+        self.payload['travellers'].append({**self.payload['travellers'][0], 'name': 'Other Traveller', 'email': 'other@example.com'})
+        trip = self.awaiting_admin()
+        self.admin()
+        people = list(trip.travellers.all())
+        for person in people:
+            response = self.client.post(f'/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/',
+                {'ticket': SimpleUploadedFile(f'{person.id}.pdf', b'%PDF-1.7 sample ticket', content_type='application/pdf')})
+            self.assertEqual(response.status_code, 201)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved', 'message': 'Have a good trip.',
+                'traveller_messages': {str(people[0].id): 'Jane instructions', str(people[1].id): 'Other instructions'}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'approved')
+        trip.refresh_from_db()
+        self.assertIsNotNone(trip.admin_decided_by_id)
+        calls = {call.args[0]: call for call in send.call_args_list}
+        self.assertEqual(set(calls), {'jane@example.com', 'other@example.com', 'manager@example.com'})
+        self.assertEqual(calls['manager@example.com'].kwargs['attachments'], [])
+        self.assertEqual(calls['manager@example.com'].kwargs['message'], 'Have a good trip.')
+        for person in people:
+            call = calls[person.email]
+            self.assertEqual(len(call.kwargs['attachments']), 1)
+            self.assertEqual(call.kwargs['attachments'][0]['filename'], f'{person.id}.pdf')
+            self.assertIsNone(call.args[3])
+        self.assertNotIn('Other instructions', calls['jane@example.com'].kwargs['message'])
+        self.assertEqual(self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'rejected'}).status_code, 409)
+        self.assertEqual(self.client.delete(f'/api/admin/tickets/{Ticket.objects.first().pk}/').status_code, 409)
+        # Delayed supervisor notification must still describe its own stage.
+        deliver(Notification.objects.get(request=trip, event='decision').pk)
+        self.assertEqual(send.call_args.kwargs['status'], 'awaiting_admin')
+
+    def test_admin_create_skips_supervisor_and_requires_staff(self):
+        payload = {**self.payload}
+        del payload['supervisor_email']
+        self.assertEqual(self.post('/api/admin/requests/new/', payload).status_code, 403)
+        self.assertEqual(self.post('/api/requests/', payload).status_code, 400)
+        self.admin()
+        response = self.post('/api/admin/requests/new/', payload)
+        self.assertEqual(response.status_code, 201)
+        trip = TravelRequest.objects.get()
+        self.assertEqual(trip.supervisor_status, 'not_required')
+        self.assertEqual(trip.status, 'awaiting_admin')
+        self.assertEqual(trip.supervisor_email, '')
+        self.assertFalse(trip.notifications.filter(event='supervisor_review').exists())
+        self.assertEqual(self.client.get(f'/api/review/{trip.approval_token}/').status_code, 404)
+        self.assertEqual(self.post('/api/admin/requests/new/', payload).status_code, 200)
+
+    def test_admin_cannot_bypass_supervisor_or_supply_foreign_traveller(self):
+        trip = self.create()
+        url = f'/api/admin/requests/{trip.pk}/decision/'
+        self.assertEqual(self.post(url, {'status': 'approved'}).status_code, 403)
+        self.admin()
+        self.assertEqual(self.post(url, {'status': 'approved'}).status_code, 409)
+        self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'})
+        self.assertEqual(self.post(url, {'status': 'approved', 'traveller_messages': {'999999': 'foreign'}}).status_code, 400)
+        trip.refresh_from_db()
+        self.assertEqual(trip.status, 'awaiting_admin')
+        self.assertFalse(trip.notifications.filter(event='admin_decision').exists())
+
+    @patch('travel.notifications.send_notification_email')
+    def test_admin_rejection_notifies_supervisor_and_applicant_without_tickets(self, send):
+        trip = self.awaiting_admin()
+        self.admin()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'rejected', 'reason': 'Budget unavailable'})
+        self.assertEqual(response.json()['rejection_reason'], 'Budget unavailable')
+        self.assertEqual(send.call_count, 2)
+        for call in send.call_args_list:
+            self.assertEqual(call.kwargs['status'], 'rejected')
+            self.assertEqual(call.kwargs['reason'], 'Budget unavailable')
+            self.assertEqual(call.kwargs['attachments'], [])
+
+    def test_ticket_validation_private_download_and_frozen_upload(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        trip = self.awaiting_admin()
+        person = trip.travellers.first()
+        url = f'/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/'
+        self.assertEqual(self.client.post(url).status_code, 403)
+        self.admin()
+        self.assertEqual(self.client.post(url, {'ticket': SimpleUploadedFile('bad.pdf', b'<html>bad</html>')}).status_code, 400)
+        self.assertEqual(self.client.post(url, {'ticket': SimpleUploadedFile('large.pdf', b'%PDF-' + b'a'*(5*1024*1024))}).status_code, 400)
+        ticket = self.client.post(url, {'ticket': SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 sample')}).json()
+        download = f'/api/admin/tickets/{ticket["id"]}/'
+        self.assertEqual(self.client.get(download)['Cache-Control'], 'no-store')
+        self.assertIn('attachment', self.client.get(download)['Content-Disposition'])
+        self.client.logout()
+        self.assertEqual(self.client.get(download).status_code, 403)
+        self.client.force_login(get_user_model().objects.get(username='admin'))
+        self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'})
+        self.assertEqual(self.client.post(url, {'ticket': SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 sample')}).status_code, 409)
+
+    def test_global_date_filter_scopes_metrics_list_and_notifications(self):
+        trip = self.awaiting_admin()
+        TravelRequest.objects.filter(pk=trip.pk).update(created_at=timezone.make_aware(datetime(2024, 2, 14, 12)))
+        self.payload['submission_key'] = str(uuid.uuid4())
+        self.post('/api/requests/', self.payload)
+        self.admin()
+        for query in ['year=2024', 'month=2024-02']:
+            metrics = self.client.get('/api/admin/metrics/?' + query).json()
+            rows = self.client.get('/api/admin/requests/?' + query).json()
+            self.assertEqual(metrics['total'], 1)
+            self.assertEqual(rows['count'], 1)
+            self.assertEqual(metrics['counts']['awaiting_admin'], 1)
+            self.assertEqual(metrics['travellers'], 1)
+            self.assertEqual(metrics['notification_failures'], 3)
+        self.assertEqual(sum(x['requests'] for x in metrics['daily']), 1)
+        self.assertEqual(self.client.get('/api/admin/requests/?year=invalid').status_code, 400)
+        self.assertEqual(self.client.get('/api/admin/metrics/?month=bad').status_code, 400)
+
+
+    def test_upgrade_preserves_supervisor_decisions_and_retry_meaning(self):
+        from importlib import import_module
+        from django.apps import apps
+        trip = self.create()
+        decided = timezone.now()
+        TravelRequest.objects.filter(pk=trip.pk).update(status='approved', decided_at=decided)
+        notice = Notification.objects.create(request=trip, event='decision', recipient=trip.applicant_email)
+        import_module('travel.migrations.0002_ticket_and_more').migrate_stages(apps, None)
+        trip.refresh_from_db()
+        notice.refresh_from_db()
+        self.assertEqual(trip.status, 'awaiting_admin')
+        self.assertEqual(trip.supervisor_status, 'approved')
+        self.assertEqual(trip.supervisor_decided_at, decided)
+        self.assertIsNone(trip.decided_at)
+        self.assertEqual(notice.payload['status'], 'awaiting_admin')

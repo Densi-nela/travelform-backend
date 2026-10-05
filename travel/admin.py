@@ -19,7 +19,7 @@ class TravelRequestAdmin(admin.ModelAdmin):
     search_fields = ['applicant_name', 'applicant_email', 'destination']
     exclude = ['approval_token', 'submission_key']
     readonly_fields = ['id', 'travel_type', 'applicant_name', 'applicant_email', 'supervisor_email',
-                       'destination', 'event_description', 'status', 'rejection_reason', 'created_at', 'decided_at']
+                       'destination', 'event_description', 'status', 'rejection_reason', 'created_at', 'decided_at', 'supervisor_status', 'supervisor_decided_at', 'admin_message', 'admin_decided_by']
     inlines = [TravellerInline]
 
     def has_add_permission(self, request):

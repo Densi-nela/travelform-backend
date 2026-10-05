@@ -4,7 +4,8 @@ from django.db import models
 
 class TravelRequest(models.Model):
     class Status(models.TextChoices):
-        PENDING = 'pending', 'Pending'
+        PENDING = 'pending', 'Pending supervisor'
+        AWAITING_ADMIN = 'awaiting_admin', 'Awaiting admin action'
         APPROVED = 'approved', 'Approved'
         REJECTED = 'rejected', 'Rejected'
 
@@ -15,7 +16,11 @@ class TravelRequest(models.Model):
     travel_type = models.CharField(max_length=20, default='air')
     applicant_name = models.CharField(max_length=150)
     applicant_email = models.EmailField()
-    supervisor_email = models.EmailField()
+    supervisor_email = models.EmailField(blank=True)
+    supervisor_status = models.CharField(max_length=20, default="pending")
+    supervisor_decided_at = models.DateTimeField(null=True, blank=True)
+    admin_message = models.TextField(blank=True, max_length=5000)
+    admin_decided_by = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="travel_decisions")
     destination = models.CharField(max_length=200)
     event_description = models.TextField(max_length=5000)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
@@ -41,14 +46,23 @@ class AirTraveller(models.Model):
         ordering = ['id']
 
 
+class Ticket(models.Model):
+    traveller = models.ForeignKey(AirTraveller, related_name="tickets", on_delete=models.CASCADE)
+    filename = models.CharField(max_length=200)
+    content_type = models.CharField(max_length=100)
+    content = models.BinaryField()
+    size = models.PositiveIntegerField()
+
+
 class Notification(models.Model):
     request = models.ForeignKey(TravelRequest, related_name='notifications', on_delete=models.CASCADE)
     event = models.CharField(max_length=40)
     recipient = models.EmailField()
+    payload = models.JSONField(default=dict)
     delivered_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     last_error = models.CharField(max_length=250, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['request', 'event'], name='one_notification_per_event')]
+        constraints = [models.UniqueConstraint(fields=['request', 'event', 'recipient'], name='one_notification_per_recipient')]
