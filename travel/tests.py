@@ -11,7 +11,7 @@ from .models import TravelRequest, AirTraveller, Notification
 from .notifications import deliver
 
 
-@override_settings(NOTIFICATION_MODE='console')
+@override_settings(NOTIFICATION_MODE='console', TRAVEL_ADMIN_EMAILS=[], NOTIFICATION_USE_API_FOR_ALL_EMAILS=False)
 class TravelWorkflowTests(TestCase):
     def test_health_is_public_and_not_cached(self):
         response = self.client.get('/api/health/')
@@ -343,12 +343,12 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(self.client.get(f'/api/review/{trip.approval_token}/').status_code, 404)
         self.assertEqual(self.post('/api/admin/requests/new/', payload).status_code, 200)
 
-    def test_admin_cannot_bypass_supervisor_or_supply_foreign_traveller(self):
+    def test_admin_rejection_waits_for_supervisor_and_blocks_foreign_traveller(self):
         trip = self.create()
         url = f'/api/admin/requests/{trip.pk}/decision/'
         self.assertEqual(self.post(url, {'status': 'approved'}).status_code, 403)
         self.admin()
-        self.assertEqual(self.post(url, {'status': 'approved'}).status_code, 409)
+        self.assertEqual(self.post(url, {'status': 'rejected'}).status_code, 409)
         self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'})
         self.assertEqual(self.post(url, {'status': 'approved', 'traveller_messages': {'999999': 'foreign'}}).status_code, 400)
         trip.refresh_from_db()
@@ -421,3 +421,372 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(trip.supervisor_decided_at, decided)
         self.assertIsNone(trip.decided_at)
         self.assertEqual(notice.payload['status'], 'awaiting_admin')
+
+
+    @override_settings(TRAVEL_ADMIN_EMAILS=['desk@example.com', 'DESK@example.com'])
+    @patch('travel.notifications.send_notification_email')
+    def test_admin_review_notice_is_deduplicated_and_has_login_link_only(self, send):
+        trip = self.create()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'})
+        self.assertEqual(response.status_code, 200)
+        notice = Notification.objects.get(event='admin_review')
+        self.assertEqual(notice.recipient, 'desk@example.com')
+        calls = {c.args[0]: c.kwargs['email'] for c in send.call_args_list}
+        self.assertEqual(calls['desk@example.com']['template'], 'travel/email/admin_action_required.html')
+        admin_html = calls['desk@example.com']['html_body']
+        self.assertIn('Awaiting admin approval', admin_html)
+        self.assertIn(f'/admin/requests/{trip.pk}', admin_html)
+        self.assertNotIn(str(trip.approval_token), json.dumps(calls))
+        self.assertEqual(calls['jane@example.com']['template'], 'travel/email/applicant_supervisor_decision.html')
+        self.assertEqual(self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'}).status_code, 409)
+        self.assertEqual(Notification.objects.filter(event='admin_review').count(), 1)
+
+    @override_settings(TRAVEL_ADMIN_EMAILS=['desk@example.com'])
+    def test_admin_created_request_queues_admin_email(self):
+        self.admin()
+        response = self.post('/api/admin/requests/new/', self.payload)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Notification.objects.filter(event='admin_review').count(), 1)
+        self.assertFalse(Notification.objects.filter(event='supervisor_review').exists())
+
+    def test_email_models_are_recipient_scoped_and_receipt_is_stable(self):
+        from .email.messages import build_email_context as build_email
+        self.payload['travellers'].append({**self.payload['travellers'][0], 'name': 'Other Person', 'email': 'other@example.com'})
+        trip = self.awaiting_admin()
+        self.admin()
+        self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'})
+        trip.refresh_from_db()
+        receipt = build_email(trip.notifications.get(event='applicant_receipt'), [])
+        self.assertEqual(receipt['template_data']['status'], 'pending')
+        self.assertEqual(receipt['template_data']['destination'], trip.destination)
+        self.assertEqual(len(receipt['template_data']['travellers']), 2)
+        self.assertNotIn('review_url', receipt['template_data'])
+        review = build_email(trip.notifications.get(event='supervisor_review'), [])
+        self.assertIn(str(trip.approval_token), review['template_data']['review_url'])
+        for email, template, count in [('jane@example.com','applicant',2), ('other@example.com','traveller',1), ('manager@example.com','supervisor',2)]:
+            notice = trip.notifications.get(event='admin_decision', recipient=email)
+            result = build_email(notice, [])
+            self.assertEqual(result['template'], f'travel/email/{template}_final_decision.html')
+            self.assertEqual(len(result['template_data']['travellers']), count)
+            self.assertNotIn(str(trip.approval_token), json.dumps(result))
+            self.assertNotIn('admin_url', result['template_data'])
+
+    @override_settings(NOTIFICATION_MODE='live')
+    @patch('travel.email.transports.send_without_attachments')
+    @patch('travel.email.transports.send_email_with_attachments')
+    def test_transport_routes_per_actual_attachment_presence(self, attached, sqs):
+        from .email.transports import dispatch_email
+        email = {'event_id': 'test', 'recipient': 'jane@example.com'}
+        dispatch_email(email, [])
+        sqs.assert_called_once_with(email)
+        attached.assert_not_called()
+        files = [{'filename': 'ticket.pdf', 'content_type': 'application/pdf', 'content_base64': 'JVBERi0='}]
+        dispatch_email(email, files)
+        attached.assert_called_once_with(email, files)
+        self.assertEqual(sqs.call_count, 1)
+
+    @override_settings(NOTIFICATION_AWS_REGION='eu-west-1', NOTIFICATION_SQS_QUEUE_URL='', NOTIFICATION_SQS_QUEUE_NAME='notifications-email-queue')
+    @patch('travel.email.transports.boto3.client')
+    def test_sqs_uses_configured_queue_and_serializes_template_model(self, factory):
+        from .email.transports import send_without_attachments
+        client = factory.return_value
+        client.get_queue_url.return_value = {'QueueUrl': 'https://sqs.eu-west-1.amazonaws.com/123456789012/notifications-email-queue'}
+        email = {'schema_version': 1, 'event_id': 'travel-notification-1', 'recipient': 'jane@example.com',
+                 'template': 'travel/email/applicant_receipt.html', 'html_body': '<p>Nairobi &amp; Mombasa</p>', 'text_body': 'Nairobi & Mombasa'}
+        send_without_attachments(email)
+        client.get_queue_url.assert_called_once_with(QueueName='notifications-email-queue')
+        args = client.send_message.call_args.kwargs
+        self.assertEqual(args['QueueUrl'], client.get_queue_url.return_value['QueueUrl'])
+        self.assertEqual(json.loads(args['MessageBody']), email)
+        self.assertNotIn('attachments', json.loads(args['MessageBody']))
+
+    @override_settings(NOTIFICATION_AWS_REGION='eu-west-1', NOTIFICATION_SQS_QUEUE_URL='https://sqs.eu-west-1.amazonaws.com/123456789012/notifications-email-queue')
+    @patch('travel.email.transports.boto3.client')
+    def test_sqs_explicit_url_skips_lookup_and_failures_remain_retryable(self, factory):
+        from .email.transports import send_without_attachments
+        send_without_attachments({'event_id': 'stable'})
+        factory.return_value.get_queue_url.assert_not_called()
+        trip = self.create()
+        notice = trip.notifications.get(event='applicant_receipt')
+        with override_settings(NOTIFICATION_MODE='live'):
+            factory.return_value.send_message.side_effect = TimeoutError('private service details')
+            deliver(notice.pk)
+        notice.refresh_from_db()
+        self.assertIsNone(notice.delivered_at)
+        self.assertEqual(notice.last_error, 'TimeoutError')
+        self.assertEqual(notice.attempts, 1)
+
+    @override_settings(NOTIFICATION_MODE='console', DEBUG=True)
+    @patch('builtins.print')
+    def test_console_mode_never_calls_aws_or_logs_private_review_link(self, log):
+        trip = self.create()
+        with patch('travel.email.transports.boto3.client') as client:
+            deliver(trip.notifications.get(event='supervisor_review').pk)
+        client.assert_not_called()
+        self.assertNotIn(str(trip.approval_token), str(log.call_args))
+
+
+    def test_django_email_rendering_all_stages_and_escaping(self):
+        from .email.messages import build_email
+        trip = self.create()
+        trip.event_description = '<script>alert("unsafe")</script> & workshop'
+        trip.save()
+        scenarios = [('applicant_receipt','pending','jane@example.com'),
+                     ('applicant_receipt','awaiting_admin','jane@example.com'),
+                     ('supervisor_review','pending','manager@example.com'),
+                     ('admin_review','awaiting_admin','desk@example.com'),
+                     ('decision','awaiting_admin','jane@example.com'),
+                     ('decision','rejected','jane@example.com')]
+        self.payload['travellers'].append({**self.payload['travellers'][0], 'name': 'Second Person', 'email': 'other@example.com'})
+        first = trip.travellers.first()
+        AirTraveller.objects.create(request=trip, name='Second Person', email='other@example.com',
+            departure_date=first.departure_date, departure_time=first.departure_time,
+            return_date=first.return_date, return_time=first.return_time, ticket_class='economy')
+        for recipient in ['jane@example.com','other@example.com','manager@example.com']:
+            scenarios.extend([('admin_decision', status, recipient) for status in ['approved','rejected']])
+        for event, status, recipient in scenarios:
+            with self.subTest(event=event, status=status, recipient=recipient):
+                notice = Notification(pk=999, request=trip, event=event, recipient=recipient,
+                    payload={'status': status, 'message': '<script>bad()</script> & instructions',
+                             'reason': 'Reschedule & discuss' if status == 'rejected' else ''})
+                attachments = [{'filename': 'my-ticket.pdf'}] if event == 'admin_decision' and status == 'approved' and recipient != 'manager@example.com' else []
+                result = build_email(notice, attachments)
+                self.assertNotIn('template_data', result)
+                self.assertTrue(result['template'].endswith('.html'))
+                self.assertIn('&lt;script&gt;', result['html_body'])
+                self.assertNotIn('<script>', result['html_body'])
+                self.assertNotIn('{%', result['html_body'])
+                self.assertIn('Destination: Mombasa, Kenya', result['text_body'])
+                if event != 'supervisor_review':
+                    self.assertNotIn(str(trip.approval_token), result['html_body'])
+                    self.assertNotIn(str(trip.approval_token), result['text_body'])
+                if recipient == 'other@example.com':
+                    self.assertNotIn('Traveller — Jane Test', result['html_body'])
+                    self.assertNotIn('TRAVELLER: Jane Test', result['text_body'])
+                if attachments:
+                    self.assertIn('my-ticket.pdf', result['html_body'])
+                    self.assertIn('my-ticket.pdf', result['text_body'])
+                if event == 'decision' and status == 'awaiting_admin':
+                    self.assertIn('waiting for admin approval', result['text_body'])
+
+
+    @patch('travel.notifications.send_notification_email')
+    def test_direct_admin_approval_records_bypass_and_notifies_supervisor(self, send):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        trip = self.create()
+        self.admin()
+        person = trip.travellers.first()
+        upload = self.client.post(f'/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/',
+            {'ticket': SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 synthetic')})
+        self.assertEqual(upload.status_code, 201)
+        trip.refresh_from_db()
+        self.assertEqual(trip.status, 'pending')  # Upload must not advance the stage.
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved', 'message': 'Direct approval.'})
+        self.assertEqual(response.status_code, 200)
+        trip.refresh_from_db()
+        self.assertEqual(trip.status, 'approved')
+        self.assertEqual(trip.supervisor_status, 'bypassed')
+        self.assertIsNone(trip.supervisor_decided_at)
+        self.assertIsNotNone(trip.admin_decided_by_id)
+        self.assertIsNotNone(trip.decided_at)
+        calls = {c.args[0]: c for c in send.call_args_list}
+        self.assertEqual(set(calls), {'jane@example.com', 'manager@example.com'})
+        self.assertEqual(calls['manager@example.com'].kwargs['attachments'], [])
+        self.assertIn('approved this request directly', calls['manager@example.com'].kwargs['email']['html_body'])
+        self.assertEqual(len(calls['jane@example.com'].kwargs['attachments']), 1)
+        self.assertEqual(self.post(f'/api/review/{trip.approval_token}/', {'status': 'rejected'}).status_code, 409)
+        self.assertEqual(self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'}).status_code, 409)
+        self.assertEqual(trip.notifications.filter(event='admin_decision').count(), 2)
+        self.assertEqual(self.client.get(f'/api/review/{trip.approval_token}/').json()['status'], 'approved')
+
+    def test_admin_cannot_override_supervisor_rejection(self):
+        trip = self.create()
+        self.post(f'/api/review/{trip.approval_token}/', {'status': 'rejected'})
+        self.admin()
+        self.assertEqual(self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'}).status_code, 409)
+
+
+    def test_public_form_token_recovers_after_admin_login_rotation(self):
+        client = Client(enforce_csrf_checks=True)
+        old_token = client.get('/api/session/').json()['csrf_token']
+        get_user_model().objects.create_user(username='rotation-admin', password='test-secret', is_staff=True)
+        login_response = client.post('/api/login/', json.dumps({'username': 'rotation-admin', 'password': 'test-secret'}),
+            content_type='application/json', HTTP_X_CSRFTOKEN=old_token)
+        self.assertEqual(login_response.status_code, 200)
+        failed = client.post('/api/requests/', json.dumps(self.payload), content_type='application/json', HTTP_X_CSRFTOKEN=old_token)
+        self.assertEqual(failed.status_code, 403)
+        self.assertEqual(failed.json()['code'], 'csrf_failed')
+        self.assertNotIn('session has expired', failed.json()['error'])
+        self.assertEqual(TravelRequest.objects.count(), 0)
+        fresh_token = client.get('/api/session/').json()['csrf_token']
+        saved = client.post('/api/requests/', json.dumps(self.payload), content_type='application/json', HTTP_X_CSRFTOKEN=fresh_token)
+        self.assertEqual(saved.status_code, 201)
+        self.assertEqual(TravelRequest.objects.count(), 1)
+
+    def test_public_form_recovers_missing_csrf_cookie_without_login(self):
+        client = Client(enforce_csrf_checks=True)
+        old_token = client.get('/api/session/').json()['csrf_token']
+        client.cookies.clear()
+        failed = client.post('/api/requests/', json.dumps(self.payload), content_type='application/json', HTTP_X_CSRFTOKEN=old_token)
+        self.assertEqual(failed.json()['code'], 'csrf_failed')
+        fresh = client.get('/api/session/').json()
+        self.assertFalse(fresh['is_admin'])
+        saved = client.post('/api/requests/', json.dumps(self.payload), content_type='application/json', HTTP_X_CSRFTOKEN=fresh['csrf_token'])
+        self.assertEqual(saved.status_code, 201)
+
+
+    @override_settings(NOTIFICATION_MODE='live', NOTIFICATION_USE_API_FOR_ALL_EMAILS=True)
+    @patch('travel.email.transports.send_without_attachments')
+    @patch('travel.email.transports.send_email_with_attachments')
+    @patch('travel.email.transports.send_email_via_api')
+    def test_api_override_sends_plain_emails_without_aws(self, api, tickets, sqs):
+        from .email.transports import dispatch_email
+        email = {'event_id': 'test', 'recipient': 'jane@example.com'}
+        dispatch_email(email, [])
+        api.assert_called_once_with(email)
+        tickets.assert_not_called()
+        sqs.assert_not_called()
+        files = [{'filename': 'ticket.pdf'}]
+        dispatch_email(email, files)
+        tickets.assert_called_once_with(email, files)
+        sqs.assert_not_called()
+
+    @override_settings(NOTIFICATION_API_URL='https://internal.example.test/', NOTIFICATION_API_TOKEN='')
+    @patch('travel.email.transports.urlopen')
+    def test_shared_api_adapter_matches_documented_endpoints(self, open_url):
+        from .email.transports import send_email_via_api, send_email_with_attachments
+        open_url.return_value.__enter__.return_value.status = 202
+        email = {'event_id': 'stable-123', 'recipient': 'jane@example.com', 'subject': 'Travel approved',
+                 'html_body': '<p>Hello</p>', 'text_body': 'Hello'}
+        common = {'subject': email['subject'], 'text': email['html_body']}
+        files = [{'filename': 'ticket.pdf', 'content_base64': 'JVBERi0='},
+                 {'filename': 'return.pdf', 'content_base64': 'cmV0dXJu'}]
+        cases = [
+            ([], 'sendEmailAttachment', {**common, 'emailAddress': email['recipient'],
+                                        'attachmentName': None, 'attachmentPath': None}),
+            (files[:1], 'sendEmailAttachmentBytes', {**common, 'emailAddress': email['recipient'],
+                                                   'attachmentName': 'ticket.pdf', 'bytes': 'JVBERi0='}),
+            (files, 'sendEmailMultiAttachment', {**common, 'emailTo': email['recipient'], 'attachments': [
+                {'name': 'ticket.pdf', 'bytes': 'JVBERi0='}, {'name': 'return.pdf', 'bytes': 'cmV0dXJu'}]}),
+        ]
+        for attachments, endpoint, expected in cases:
+            with self.subTest(endpoint=endpoint):
+                if attachments:
+                    send_email_with_attachments(email, attachments)
+                else:
+                    send_email_via_api(email)
+                request = open_url.call_args.args[0]
+                self.assertEqual(request.full_url, f'https://internal.example.test/notification/email/{endpoint}')
+                self.assertEqual(request.get_method(), 'POST')
+                self.assertEqual(request.get_header('Content-type'), 'application/json')
+                self.assertIsNone(request.get_header('Authorization'))
+                self.assertEqual(json.loads(request.data), expected)
+                self.assertEqual(open_url.call_args.kwargs, {'timeout': 15})
+
+    @override_settings(NOTIFICATION_API_URL='https://internal.example.test', NOTIFICATION_API_TOKEN='test-token')
+    @patch('travel.email.transports.urlopen')
+    def test_api_adapter_propagates_rejection_and_supports_optional_gateway_token(self, open_url):
+        from .email.transports import send_email_via_api
+        email = {'recipient': 'jane@example.com', 'subject': 'Travel', 'html_body': '<p>Hello</p>'}
+        open_url.return_value.__enter__.return_value.status = 503
+        with self.assertRaises(RuntimeError):
+            send_email_via_api(email)
+        self.assertEqual(open_url.call_args.args[0].get_header('Authorization'), 'Bearer test-token')
+        open_url.side_effect = TimeoutError
+        with self.assertRaises(TimeoutError):
+            send_email_via_api(email)
+
+    @override_settings(NOTIFICATION_MODE='live', NOTIFICATION_USE_API_FOR_ALL_EMAILS=True)
+    @patch('travel.email.transports.send_email_via_api', side_effect=TimeoutError)
+    def test_api_failure_keeps_saved_request_and_retryable_outbox(self, api):
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post('/api/requests/', self.payload)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(TravelRequest.objects.count(), 1)
+        self.assertEqual(Notification.objects.filter(delivered_at__isnull=True, attempts=1).count(), 2)
+        self.assertIn('queued', response.json()['message'])
+
+
+    @patch('travel.notifications.send_notification_email')
+    def test_admin_retries_one_email_and_does_not_resend_delivered(self, send):
+        trip = self.create()
+        notice = trip.notifications.get(event='applicant_receipt')
+        Notification.objects.filter(pk=notice.pk).update(attempts=1, last_error='TimeoutError')
+        url = f'/api/admin/requests/{trip.pk}/notifications/{notice.pk}/retry/'
+        self.assertEqual(self.post(url, {}).status_code, 403)
+        self.admin()
+        self.assertEqual(self.client.get(url).status_code, 405)
+        missing = f'/api/admin/requests/{uuid.uuid4()}/notifications/{notice.pk}/retry/'
+        self.assertEqual(self.post(missing, {}).status_code, 404)
+        self.assertEqual(self.post(url, {}).status_code, 200)
+        notice.refresh_from_db()
+        self.assertIsNotNone(notice.delivered_at)
+        self.assertEqual(notice.attempts, 2)
+        self.assertEqual(notice.last_error, '')
+        self.assertIsNone(notice.delivery_started_at)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0], 'jane@example.com')
+        self.assertEqual(self.post(url, {}).status_code, 200)
+        send.assert_called_once()
+        self.assertIsNone(trip.notifications.get(event='supervisor_review').delivered_at)
+
+    @patch('travel.notifications.send_notification_email', side_effect=TimeoutError)
+    def test_admin_retry_failure_remains_retryable_and_csrf_protected(self, send):
+        trip = self.create()
+        notice = trip.notifications.get(event='applicant_receipt')
+        self.admin()
+        url = f'/api/admin/requests/{trip.pk}/notifications/{notice.pk}/retry/'
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(get_user_model().objects.get(username='admin'))
+        self.assertEqual(self.post(url, {}, client=csrf_client).status_code, 403)
+        self.assertEqual(self.post(url, {}).status_code, 502)
+        notice.refresh_from_db()
+        self.assertIsNone(notice.delivered_at)
+        self.assertIsNone(notice.delivery_started_at)
+        self.assertEqual(notice.last_error, 'TimeoutError')
+        self.assertEqual(notice.attempts, 1)
+
+    @patch('travel.notifications.send_notification_email')
+    def test_retry_claim_blocks_concurrent_send_and_recovers_stale_claim(self, send):
+        trip = self.create()
+        notice = trip.notifications.get(event='applicant_receipt')
+        self.admin()
+        url = f'/api/admin/requests/{trip.pk}/notifications/{notice.pk}/retry/'
+        Notification.objects.filter(pk=notice.pk).update(delivery_started_at=timezone.now())
+        self.assertEqual(self.post(url, {}).status_code, 409)
+        send.assert_not_called()
+        Notification.objects.filter(pk=notice.pk).update(delivery_started_at=timezone.now()-timedelta(minutes=11))
+        self.assertEqual(self.post(url, {}).status_code, 200)
+        send.assert_called_once()
+
+
+    @patch('travel.notifications.send_notification_email')
+    def test_dns_failure_is_actionable_without_leaking_remote_details(self, send):
+        import socket
+        from urllib.error import URLError
+        send.side_effect = URLError(socket.gaierror(11001, 'sensitive remote details'))
+        trip = self.create()
+        notice = trip.notifications.get(event='applicant_receipt')
+        self.admin()
+        response = self.post(f'/api/admin/requests/{trip.pk}/notifications/{notice.pk}/retry/', {})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('DNS', response.json()['error'])
+        self.assertNotIn('sensitive', response.json()['error'])
+        notice.refresh_from_db()
+        self.assertEqual(notice.last_error, 'DNSResolutionError')
+        self.assertIsNone(notice.delivered_at)
+        detail = self.client.get(f'/api/admin/requests/{trip.pk}/').json()
+        failed = next(n for n in detail['notifications'] if n['id'] == notice.pk)
+        self.assertIn('VPN', failed['error_message'])
+
+    def test_delivery_error_classification_keeps_only_safe_details(self):
+        from urllib.error import HTTPError, URLError
+        from .email.errors import delivery_error_code, delivery_error_message
+        exc = HTTPError('https://secret-url', 503, 'secret response', {}, None)
+        self.assertEqual(delivery_error_code(exc), 'HTTPError:503')
+        self.assertIn('503', delivery_error_message(delivery_error_code(exc)))
+        self.assertNotIn('secret', delivery_error_message(delivery_error_code(exc)))
+        self.assertEqual(delivery_error_code(URLError(TimeoutError())), 'TimeoutError')
+        self.assertEqual(delivery_error_code(URLError(ConnectionRefusedError())), 'ConnectionRefusedError')

@@ -60,6 +60,7 @@ class Notification(models.Model):
     recipient = models.EmailField()
     payload = models.JSONField(default=dict)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    delivery_started_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     last_error = models.CharField(max_length=250, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

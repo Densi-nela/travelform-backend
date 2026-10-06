@@ -6,15 +6,16 @@ from uuid import UUID
 from django.contrib.auth import authenticate, login, logout
 from django.core.paginator import Paginator
 from django.db import DatabaseError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Case, When, Value, F
 from django.db.models.functions import TruncDate, ExtractMonth
 from django.http import JsonResponse, HttpResponse
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .models import TravelRequest, AirTraveller, Notification, Ticket
-from .notifications import deliver_many
+from .notifications import deliver, deliver_many, queue_admin_review
 from .validation import submission, text
+from .email.errors import delivery_error_message
 
 
 def error(message, status=400):
@@ -22,7 +23,7 @@ def error(message, status=400):
 
 
 def csrf_failure(request, reason=''):
-    return error('Your session has expired. Refresh the page and try again.', 403)
+    return JsonResponse({'code': 'csrf_failed', 'error': 'We could not verify this request. Your entered details are still here. Please try again.'}, status=403)
 
 
 def body(request):
@@ -143,7 +144,10 @@ def review(request, token):
         if not changed:
             return error('This request has already been decided. Refresh to see the result.', 409)
         notice = Notification.objects.create(request=trip, event='decision', recipient=trip.applicant_email, payload={'status': 'awaiting_admin' if status == 'approved' else 'rejected', 'reason': reason})
-        transaction.on_commit(lambda: deliver_many([notice.id]))
+        notice_ids = [notice.id]
+        if status == 'approved':
+            notice_ids.extend(queue_admin_review(trip))
+        transaction.on_commit(lambda: deliver_many(notice_ids))
     trip.refresh_from_db()
     return JsonResponse(serialize(trip, True))
 
@@ -183,7 +187,9 @@ def request_detail(request, pk):
     result = serialize(trip, True)
     result['admin_message'] = trip.admin_message
     result['tickets'] = list(Ticket.objects.filter(traveller__request=trip).values('id', 'traveller_id', 'filename', 'size'))
-    result['notifications'] = list(trip.notifications.values('event', 'recipient', 'delivered_at', 'attempts', 'last_error'))
+    result['notifications'] = list(trip.notifications.values('id', 'event', 'recipient', 'delivered_at', 'attempts', 'last_error'))
+    for notice in result['notifications']:
+        notice['error_message'] = delivery_error_message(notice['last_error']) if notice['last_error'] else ''
     return JsonResponse(result)
 
 
@@ -288,7 +294,8 @@ def admin_submit(request):
             AirTraveller.objects.bulk_create([AirTraveller(request=trip, **p) for p in people])
             notice = Notification.objects.create(request=trip, event='applicant_receipt', recipient=trip.applicant_email,
                 payload={'status': 'awaiting_admin'})
-            transaction.on_commit(lambda: deliver_many([notice.id]))
+            notice_ids = [notice.id, *queue_admin_review(trip)]
+            transaction.on_commit(lambda: deliver_many(notice_ids))
     return JsonResponse(serialize(trip, True), status=201 if created else 200)
 
 
@@ -310,10 +317,12 @@ def admin_decision(request, pk):
         return error(str(exc))
     with transaction.atomic():
         # This write locks the request before checking travellers/tickets as well.
-        changed = TravelRequest.objects.filter(pk=pk, status='awaiting_admin').update(
-            status=status, rejection_reason=reason, admin_message=message, decided_at=timezone.now(), admin_decided_by=request.user)
+        allowed_statuses = ['pending', 'awaiting_admin'] if status == 'approved' else ['awaiting_admin']
+        changed = TravelRequest.objects.filter(pk=pk, status__in=allowed_statuses).update(
+            status=status, rejection_reason=reason, admin_message=message, decided_at=timezone.now(), admin_decided_by=request.user,
+            supervisor_status=Case(When(status='pending', then=Value('bypassed')), default=F('supervisor_status')))
         if not changed:
-            return error('Only requests awaiting admin action can be decided. Refresh to see the latest status.', 409)
+            return error('Approve a pending request, or approve/reject a request awaiting admin action. Final decisions cannot be changed.', 409)
         trip = TravelRequest.objects.get(pk=pk)
         people = list(trip.travellers.all())
         if set(personal) - {str(p.id) for p in people}:
@@ -328,7 +337,7 @@ def admin_decision(request, pk):
             notes = [personal.get(str(p.id), '') for p in own]
             ticket_ids = list(Ticket.objects.filter(traveller__in=own).values_list('id', flat=True)) if status == 'approved' else []
             payload = {'status': status, 'reason': reason, 'message': '\n\n'.join(v for v in [message, *notes] if v),
-                'ticket_ids': ticket_ids, 'employee_name': own[0].name if own else trip.applicant_name}
+                'direct_admin_approval': trip.supervisor_status == 'bypassed', 'ticket_ids': ticket_ids, 'employee_name': own[0].name if own else trip.applicant_name}
             notices.append(Notification.objects.create(request=trip, event='admin_decision', recipient=recipient, payload=payload).id)
         transaction.on_commit(lambda: deliver_many(notices))
     return JsonResponse(serialize(trip, True))
@@ -352,8 +361,8 @@ def upload_ticket(request, pk, traveller_id):
     from pathlib import Path
     filename = Path(upload.name).stem[:180] + extension
     with transaction.atomic():
-        if not TravelRequest.objects.filter(pk=pk, status='awaiting_admin').update(status='awaiting_admin'):
-            return error('Tickets can only be changed while awaiting admin action.', 409)
+        if not TravelRequest.objects.filter(pk=pk, status__in=['pending', 'awaiting_admin']).update(status=F('status')):
+            return error('Tickets can only be changed before a final decision.', 409)
         person = AirTraveller.objects.filter(pk=traveller_id, request_id=pk).first()
         if person is None:
             return error('Traveller not found.', 404)
@@ -372,7 +381,7 @@ def ticket_detail(request, pk):
         return error('Ticket not found.', 404)
     if request.method == 'DELETE':
         with transaction.atomic():
-            if not TravelRequest.objects.filter(pk=ticket.traveller.request_id, status='awaiting_admin').update(status='awaiting_admin'):
+            if not TravelRequest.objects.filter(pk=ticket.traveller.request_id, status__in=['pending', 'awaiting_admin']).update(status=F('status')):
                 return error('Tickets on a decided request cannot be changed.', 409)
             ticket.delete()
         return JsonResponse({'ok': True})
@@ -381,3 +390,22 @@ def ticket_detail(request, pk):
     response['Content-Disposition'] = content_disposition_header(True, ticket.filename)
     response['X-Content-Type-Options'] = 'nosniff'
     return response
+
+
+@require_POST
+@staff_only
+def retry_notification(request, pk, notification_id):
+    notice = Notification.objects.filter(pk=notification_id, request_id=pk).first()
+    if notice is None:
+        return error('Email notification not found.', 404)
+    if notice.delivered_at:
+        return JsonResponse({'message': 'This email was already dispatched.'})
+    if not deliver(notice.pk):
+        notice.refresh_from_db()
+        if notice.delivered_at:
+            return JsonResponse({'message': 'This email was already dispatched.'})
+        return error('This email is already being sent. Please refresh shortly.', 409)
+    notice.refresh_from_db()
+    if not notice.delivered_at:
+        return error(delivery_error_message(notice.last_error), 502)
+    return JsonResponse({'message': 'Email dispatched successfully.'})

@@ -1,0 +1,9 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+<p>The travel request from <strong>{{ applicant_name }}</strong> to <strong>{{ destination }}</strong> is ready for admin action.</p>
+{% if supervisor_email %}<p>Supervisor review is complete. Please open the request to record the final decision, attach each traveller's tickets and add any travel instructions.</p>{% else %}<p>This is an admin-created request and does not require supervisor review. Please complete the travel arrangements and record the final decision.</p>{% endif %}
+<p><strong>{{ reference }} · Awaiting admin approval</strong></p>
+{% include "travel/email/_button.html" with url=admin_url label="Open request in admin workspace" %}
+<p style="font-size:12px;color:#68758a;">Your administrator login is required. Uploaded tickets will be sent only to their assigned traveller on approval.</p>
+{% include "travel/email/_details.html" %}
+{% endblock %}

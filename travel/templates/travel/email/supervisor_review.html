@@ -1,0 +1,9 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+<p><strong>{{ applicant_name }}</strong> has requested travel to <strong>{{ destination }}</strong>. Please review the submitted form details and approve or reject the request.</p>
+<p><strong>{{ reference }} · Pending supervisor approval</strong></p>
+<p>Your approval sends the request to the travel administrator for the final decision; it does not confirm a flight booking.</p>
+{% include "travel/email/_button.html" with url=review_url label="Review travel request" %}
+<p style="color:#a34242;font-size:12px;">This is a private review link. Anyone with this link can record your decision. Do not forward it.</p>
+{% include "travel/email/_details.html" %}
+{% endblock %}

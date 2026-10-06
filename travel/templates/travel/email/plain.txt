@@ -1,0 +1,56 @@
+{% autoescape off %}{{ title }}
+{{ reference }} | {{ status_label }}
+
+Dear {{ recipient_name }},
+{% if direct_admin_approval %}
+The administrator approved this request directly before supervisor review was completed. No further supervisor action is required.
+{% endif %}
+
+{% if event == "applicant_receipt" %}Your travel request has been submitted successfully.
+{% if status == "awaiting_admin" %}This admin-created request is waiting for final admin approval. Supervisor review is not required.{% else %}Your supervisor has been sent a private review link. Once approved, your request will move to the travel administrator for the final decision.{% endif %}
+This receipt is not a confirmed flight booking.
+{% elif event == "supervisor_review" %}{{ applicant_name }} has requested travel to {{ destination }}. Please review and approve or reject the request. Your approval sends it to the administrator for the final decision.
+Review: {{ review_url }}
+This link is private. Do not forward it.
+{% elif event == "admin_review" %}This request is waiting for your final admin decision. Open the request to review the details, assign tickets and add travel instructions.
+Admin workspace (login required): {{ admin_url }}
+{% elif event == "decision" %}{% if status == "awaiting_admin" %}Your supervisor has approved your application. It is now waiting for admin approval. You will receive another email with the final decision.{% else %}Your supervisor has declined your application. It will not proceed to admin approval.{% endif %}
+{% else %}The travel administrator has {% if status == "approved" %}approved{% else %}declined{% endif %} the travel request submitted by {{ applicant_name }}.
+{% if status == "approved" %}Each traveller receives their own notification and any tickets assigned to their email address.{% else %}No tickets are issued with this notification.{% endif %}
+{% endif %}
+{% if reason %}Reason for rejection:
+{{ reason }}
+{% endif %}{% if message %}Message from the travel desk:
+{{ message }}
+{% endif %}
+JOURNEY DETAILS
+Reference: {{ reference }}
+Destination: {{ destination }}
+Travel type: {{ travel_type }}
+Submitted by: {{ applicant_name }} ({{ applicant_email }})
+{% if recipient_role != "traveller" %}Supervisor: {{ supervisor_email|default:"Not required — admin submission" }}
+{% endif %}Submitted at: {{ submitted_at }}
+Travellers on request: {{ traveller_count }}
+Purpose / event:
+{{ event_description }}
+
+{% for traveller in travellers %}TRAVELLER: {{ traveller.name }}
+Email: {{ traveller.email }}
+Departure: {{ traveller.departure_date }} at {{ traveller.departure_time }}
+Return: {{ traveller.return_date }} at {{ traveller.return_time }}
+Ticket class: {{ traveller.ticket_class }}
+
+{% endfor %}Travel times are the local times entered on the request. Requested flight times are subject to the issued ticket.
+{% if attachments %}
+YOUR ATTACHED TICKETS
+{% for attachment in attachments %}- {{ attachment.filename }}
+{% endfor %}Please check your name, flight dates and times before travelling.
+{% elif status == "approved" and recipient_role != "supervisor" %}
+No tickets are attached to this email. Contact the travel desk for assistance.
+{% endif %}
+Kind regards,
+APA Insurance Travel Desk
+Insuring Happiness
+
+This is a system-generated email. Please do not reply. Contact your travel administrator through your usual internal channel.
+{% endautoescape %}

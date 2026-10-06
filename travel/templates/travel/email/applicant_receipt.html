@@ -1,0 +1,8 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+<p>Your travel request has been submitted successfully. Keep the reference below for any follow-up.</p>
+<p><strong>{{ reference }} · {{ status_label }}</strong></p>
+{% if status == "awaiting_admin" %}<p>This request was arranged by an administrator and does not require supervisor approval. It is waiting for the final admin decision.</p>{% else %}<p>A private review link has been sent to your supervisor. Once they approve, the request will move to the travel administrator for the final decision.</p>{% endif %}
+<p>You will receive email updates as your request progresses. This receipt is not a confirmed flight booking.</p>
+{% include "travel/email/_details.html" %}
+{% endblock %}

@@ -1,0 +1,7 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+{% if direct_admin_approval %}<p>The administrator approved this request directly before supervisor review was completed. No further supervisor action is required.</p>{% endif %}
+{% if status == "approved" %}<p>The travel administrator has <strong>approved the travel request</strong> that includes you, submitted by {{ applicant_name }}.</p><p>Your itinerary and any tickets assigned to you are below. Please read the travel desk's message before travelling.</p>{% else %}<p>The travel administrator has <strong>declined the travel request</strong> that includes you, submitted by {{ applicant_name }}. No tickets are attached to this notification.</p>{% endif %}
+<p><strong>{{ reference }} · {{ status_label }}</strong></p>
+{% include "travel/email/_notes.html" %}{% include "travel/email/_tickets.html" %}{% include "travel/email/_details.html" %}
+{% endblock %}

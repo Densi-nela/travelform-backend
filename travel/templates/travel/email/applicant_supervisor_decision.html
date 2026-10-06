@@ -1,0 +1,6 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+{% if status == "awaiting_admin" %}<p>Your supervisor has approved your travel application. It is now <strong>waiting for admin approval</strong>.</p><p>The travel administrator will review the request and arrange the next steps. You will receive another email with the final decision and any tickets assigned to you.</p>{% else %}<p>Your supervisor has declined this travel application. It will not proceed to admin approval. Please contact your supervisor if you need to discuss a revised request.</p>{% endif %}
+<p><strong>{{ reference }} · {{ status_label }}</strong></p>
+{% include "travel/email/_notes.html" %}{% include "travel/email/_details.html" %}
+{% endblock %}

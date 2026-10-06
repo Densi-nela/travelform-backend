@@ -1,0 +1,22 @@
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:24px;font-size:13px;">
+<tr><td colspan="2" bgcolor="#16468f" style="padding:12px 16px;color:#ffffff;font-weight:bold;">Journey details</td></tr>
+{% include "travel/email/_row.html" with label="Request reference" value=reference %}
+{% include "travel/email/_row.html" with label="Destination" value=destination %}
+{% include "travel/email/_row.html" with label="Travel type" value=travel_type %}
+{% include "travel/email/_row.html" with label="Submitted by" value=applicant_name %}
+{% include "travel/email/_row.html" with label="Applicant email" value=applicant_email %}
+{% if recipient_role != "traveller" %}{% include "travel/email/_row.html" with label="Supervisor" value=supervisor_email|default:"Not required — admin submission" %}{% endif %}
+{% include "travel/email/_row.html" with label="Submitted at" value=submitted_at %}
+{% include "travel/email/_row.html" with label="Travellers on request" value=traveller_count %}
+<tr><td valign="top" style="padding:11px 16px;border-bottom:1px solid #e5eaf1;color:#68758a;">Purpose / event</td><td style="padding:11px 16px;border-bottom:1px solid #e5eaf1;word-break:break-word;">{{ event_description|linebreaksbr }}</td></tr>
+</table>
+{% for traveller in travellers %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:24px;font-size:13px;">
+<tr><td colspan="2" bgcolor="#16468f" style="padding:12px 16px;color:#ffffff;font-weight:bold;">Traveller — {{ traveller.name }}</td></tr>
+{% include "travel/email/_row.html" with label="Email" value=traveller.email %}
+<tr><td style="padding:11px 16px;border-bottom:1px solid #e5eaf1;color:#68758a;">Departure</td><td style="padding:11px 16px;border-bottom:1px solid #e5eaf1;">{{ traveller.departure_date }} at {{ traveller.departure_time }}</td></tr>
+<tr><td style="padding:11px 16px;border-bottom:1px solid #e5eaf1;color:#68758a;">Return</td><td style="padding:11px 16px;border-bottom:1px solid #e5eaf1;">{{ traveller.return_date }} at {{ traveller.return_time }}</td></tr>
+{% include "travel/email/_row.html" with label="Ticket class" value=traveller.ticket_class %}
+</table>
+{% endfor %}
+<p style="font-size:12px;color:#68758a;margin:12px 0 0;">Travel times are the local times entered on the request. Requested flight times are subject to the issued ticket.</p>

@@ -1,0 +1,7 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+{% if direct_admin_approval %}<p>The administrator approved this request directly before supervisor review was completed. No further supervisor action is required.</p>{% endif %}
+{% if status == "approved" %}<p>The travel administrator has <strong>approved your application</strong> to {{ destination }}.</p><p>Each traveller receives their own notification and any tickets assigned to their email address. This email contains only tickets assigned to you, if applicable.</p>{% else %}<p>The travel administrator has <strong>declined your application</strong> to {{ destination }}. No tickets are being issued with this notification.</p>{% endif %}
+<p><strong>{{ reference }} · {{ status_label }}</strong></p>
+{% include "travel/email/_notes.html" %}{% include "travel/email/_tickets.html" %}{% include "travel/email/_details.html" %}
+{% endblock %}

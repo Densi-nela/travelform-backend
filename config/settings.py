@@ -30,7 +30,7 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
-CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost:5174').split(',')
 CSRF_FAILURE_VIEW = 'travel.views.csrf_failure'
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG
@@ -40,5 +40,13 @@ SECURE_REFERRER_POLICY = 'no-referrer'
 X_FRAME_OPTIONS = 'DENY'
 DATA_UPLOAD_MAX_MEMORY_SIZE = 100_000
 NOTIFICATION_MODE = os.getenv('NOTIFICATION_MODE', 'console')
-NOTIFICATION_API_URL = os.getenv('NOTIFICATION_API_URL', '')
+NOTIFICATION_USE_API_FOR_ALL_EMAILS = os.getenv('NOTIFICATION_USE_API_FOR_ALL_EMAILS', 'false').strip().lower() == 'true'
+NOTIFICATION_API_URL = os.getenv('NOTIFICATION_API_URL', 'http://notification-apis-service.service.apainsurance.ke:8080').strip().rstrip('/')
 NOTIFICATION_API_TOKEN = os.getenv('NOTIFICATION_API_TOKEN', '')
+
+# Email content is rendered by Django before delivery.
+NOTIFICATION_AWS_REGION = os.getenv('AWS_REGION', os.getenv('AWS_DEFAULT_REGION', ''))
+NOTIFICATION_SQS_QUEUE_NAME = os.getenv('NOTIFICATION_SQS_QUEUE_NAME', 'notifications-email-queue')
+NOTIFICATION_SQS_QUEUE_URL = os.getenv('NOTIFICATION_SQS_QUEUE_URL', '')
+TRAVEL_ADMIN_EMAILS = [address.strip() for address in os.getenv('TRAVEL_ADMIN_EMAILS', '').split(',') if address.strip()]
+EMAIL_LOGO_URL = os.getenv('EMAIL_LOGO_URL', 'https://www.apainsurance.org/images/AppResources/Apollo_Logo.png')

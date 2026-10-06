@@ -4,7 +4,7 @@ from travel.notifications import deliver
 
 
 class Command(BaseCommand):
-    help = 'Retry undelivered notifications. Run with one scheduler/worker; service should honor Idempotency-Key.'
+    help = 'Retry undelivered notifications. Run with one scheduler/worker; API delivery is not guaranteed to be idempotent.'
 
     def handle(self, *args, **options):
         ids = list(Notification.objects.filter(delivered_at__isnull=True).values_list('id', flat=True))
