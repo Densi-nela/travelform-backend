@@ -44,8 +44,8 @@ def send_email_via_api(email, attachments=None):
     attachments = attachments or []
     payload = {'subject': email['subject'], 'text': email['html_body']}
     if not attachments:
-        endpoint = 'sendEmailAttachment'
-        payload.update(emailAddress=email['recipient'], attachmentName=None, attachmentPath=None)
+        endpoint = 'sendEmail'
+        payload.update(emailAddress=email['recipient'])
     elif len(attachments) == 1:
         endpoint = 'sendEmailAttachmentBytes'
         attachment = attachments[0]

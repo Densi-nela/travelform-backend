@@ -41,7 +41,7 @@ X_FRAME_OPTIONS = 'DENY'
 DATA_UPLOAD_MAX_MEMORY_SIZE = 100_000
 NOTIFICATION_MODE = os.getenv('NOTIFICATION_MODE', 'console')
 NOTIFICATION_USE_API_FOR_ALL_EMAILS = os.getenv('NOTIFICATION_USE_API_FOR_ALL_EMAILS', 'false').strip().lower() == 'true'
-NOTIFICATION_API_URL = os.getenv('NOTIFICATION_API_URL', 'http://notification-apis-service.service.apainsurance.ke:8080').strip().rstrip('/')
+NOTIFICATION_API_URL = os.getenv('NOTIFICATION_API_URL', 'http://internal-apis-services-alb-1438949379.eu-west-1.elb.amazonaws.com').strip().rstrip('/')
 NOTIFICATION_API_TOKEN = os.getenv('NOTIFICATION_API_TOKEN', '')
 
 # Email content is rendered by Django before delivery.
