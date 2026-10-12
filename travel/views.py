@@ -346,31 +346,39 @@ def admin_decision(request, pk):
 @require_POST
 @staff_only
 def upload_ticket(request, pk, traveller_id):
-    upload = request.FILES.get('ticket')
-    if not upload or upload.size > 5 * 1024 * 1024:
-        return error('Choose a PDF, PNG or JPEG ticket up to 5 MB.')
-    content = upload.read()
-    if content.startswith(b'%PDF-'):
-        mime, extension = 'application/pdf', '.pdf'
-    elif content.startswith(b'\x89PNG\r\n\x1a\n'):
-        mime, extension = 'image/png', '.png'
-    elif content.startswith(b'\xff\xd8\xff'):
-        mime, extension = 'image/jpeg', '.jpg'
-    else:
-        return error('Tickets must be PDF, PNG or JPEG files.')
-    from pathlib import Path
-    filename = Path(upload.name).stem[:180] + extension
+    uploads = request.FILES.getlist('ticket')
+    if not uploads or len(uploads) > 50:
+        return error('Choose between 1 and 50 attachments.')
+    prepared = []
+    for upload in uploads:
+        if not upload.size or upload.size > 5 * 1024 * 1024:
+            return error('Each attachment must be a PDF, PNG or JPEG up to 5 MB.')
+        content = upload.read()
+        if content.startswith(b'%PDF-'):
+            mime = 'application/pdf'
+        elif content.startswith(b'\x89PNG\r\n\x1a\n'):
+            mime = 'image/png'
+        elif content.startswith(b'\xff\xd8\xff'):
+            mime = 'image/jpeg'
+        else:
+            return error('Attachments must be PDF, PNG or JPEG files. No files from this selection were saved.')
+        prepared.append((upload.name[:200], mime, content))
+        if sum(len(item[2]) for item in prepared) > 20 * 1024 * 1024:
+            return error('A request supports up to 20 MB of attachments in total.')
     with transaction.atomic():
         if not TravelRequest.objects.filter(pk=pk, status__in=['pending', 'awaiting_admin']).update(status=F('status')):
-            return error('Tickets can only be changed before a final decision.', 409)
+            return error('Attachments can only be changed before a final decision.', 409)
         person = AirTraveller.objects.filter(pk=traveller_id, request_id=pk).first()
         if person is None:
             return error('Traveller not found.', 404)
         sizes = list(Ticket.objects.filter(traveller__request_id=pk).values_list('size', flat=True))
-        if len(sizes) >= 50 or sum(sizes) + len(content) > 20 * 1024 * 1024:
-            return error('A request supports up to 50 tickets and 20 MB of attachments in total.')
-        ticket = Ticket.objects.create(traveller=person, filename=filename, content_type=mime, content=content, size=len(content))
-    return JsonResponse({'id': ticket.id, 'filename': ticket.filename}, status=201)
+        if len(sizes) + len(prepared) > 50 or sum(sizes) + sum(len(item[2]) for item in prepared) > 20 * 1024 * 1024:
+            return error('A request supports up to 50 files and 20 MB of attachments in total.')
+        tickets = [Ticket.objects.create(traveller=person, filename=name, content_type=mime,
+                   content=content, size=len(content)) for name, mime, content in prepared]
+    # Keep the original single-file response fields for existing callers.
+    return JsonResponse({'id': tickets[0].id, 'filename': tickets[0].filename,
+                         'attachments': [{'id': t.id, 'filename': t.filename} for t in tickets]}, status=201)
 
 
 @require_http_methods(['GET', 'DELETE'])

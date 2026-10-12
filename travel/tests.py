@@ -562,7 +562,7 @@ class TravelWorkflowTests(TestCase):
                     self.assertNotIn(str(trip.approval_token), result['html_body'])
                     self.assertNotIn(str(trip.approval_token), result['text_body'])
                 if recipient == 'other@example.com':
-                    self.assertNotIn('Traveller — Jane Test', result['html_body'])
+                    self.assertNotIn('Traveller â€” Jane Test', result['html_body'])
                     self.assertNotIn('TRAVELLER: Jane Test', result['text_body'])
                 if attachments:
                     self.assertIn('my-ticket.pdf', result['html_body'])
@@ -661,15 +661,14 @@ class TravelWorkflowTests(TestCase):
         email = {'event_id': 'stable-123', 'recipient': 'jane@example.com', 'subject': 'Travel approved',
                  'html_body': '<p>Hello</p>', 'text_body': 'Hello'}
         common = {'subject': email['subject'], 'text': email['html_body']}
-        files = [{'filename': 'ticket.pdf', 'content_base64': 'JVBERi0='},
-                 {'filename': 'return.pdf', 'content_base64': 'cmV0dXJu'}]
+        files = [{'filename': 'ticket.pdf', 'content_type': 'application/pdf', 'content_base64': 'JVBERi0='},
+                 {'filename': 'document.png', 'content_type': 'image/png', 'content_base64': 'cmV0dXJu'}]
+        mapped = [{'fileName': 'ticket.pdf', 'contentType': 'application/pdf', 'data': 'JVBERi0='},
+                  {'fileName': 'document.png', 'contentType': 'image/png', 'data': 'cmV0dXJu'}]
         cases = [
-            ([], 'sendEmailAttachment', {**common, 'emailAddress': email['recipient'],
-                                        'attachmentName': None, 'attachmentPath': None}),
-            (files[:1], 'sendEmailAttachmentBytes', {**common, 'emailAddress': email['recipient'],
-                                                   'attachmentName': 'ticket.pdf', 'bytes': 'JVBERi0='}),
-            (files, 'sendEmailMultiAttachment', {**common, 'emailTo': email['recipient'], 'attachments': [
-                {'name': 'ticket.pdf', 'bytes': 'JVBERi0='}, {'name': 'return.pdf', 'bytes': 'cmV0dXJu'}]}),
+            ([], 'sendEmail', {**common, 'emailAddress': email['recipient']}),
+            (files[:1], 'sendEmailMultiAttachment', {**common, 'emailAddress': email['recipient'], 'attachments': mapped[:1]}),
+            (files, 'sendEmailMultiAttachment', {**common, 'emailAddress': email['recipient'], 'attachments': mapped}),
         ]
         for attachments, endpoint, expected in cases:
             with self.subTest(endpoint=endpoint):
@@ -790,3 +789,42 @@ class TravelWorkflowTests(TestCase):
         self.assertNotIn('secret', delivery_error_message(delivery_error_code(exc)))
         self.assertEqual(delivery_error_code(URLError(TimeoutError())), 'TimeoutError')
         self.assertEqual(delivery_error_code(URLError(ConnectionRefusedError())), 'ConnectionRefusedError')
+
+
+    @override_settings(NOTIFICATION_MODE='live', NOTIFICATION_USE_API_FOR_ALL_EMAILS=True)
+    @patch('travel.email.transports.urlopen')
+    def test_multiple_uploaded_documents_deliver_to_their_traveller_only(self, open_url):
+        import base64
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        open_url.return_value.__enter__.return_value.status = 202
+        self.payload['travellers'].append({**self.payload['travellers'][0], 'name': 'Other', 'email': 'other@example.com'})
+        trip = self.create()
+        self.admin()
+        person = trip.travellers.get(email='jane@example.com')
+        files = [('Ticket.pdf', b'%PDF-1.7 ticket'), ('Supporting.pdf', b'%PDF-1.7 supporting')]
+        response = self.client.post(f'/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/',
+            {'ticket': [SimpleUploadedFile(name, data, content_type='application/pdf') for name, data in files]})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.json()['attachments']), 2)
+        with self.settings(NOTIFICATION_API_URL='https://internal.example.test'):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.assertEqual(self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'}).status_code, 200)
+        sent = {json.loads(c.args[0].data)['emailAddress']: (c.args[0].full_url, json.loads(c.args[0].data)) for c in open_url.call_args_list}
+        url, payload = sent['jane@example.com']
+        self.assertTrue(url.endswith('/sendEmailMultiAttachment'))
+        self.assertEqual(payload['attachments'], [{'fileName': name, 'contentType': 'application/pdf',
+            'data': base64.b64encode(data).decode('ascii')} for name, data in files])
+        self.assertNotIn('attachments', sent['other@example.com'][1])
+        self.assertNotIn('attachments', sent['manager@example.com'][1])
+
+    def test_multi_upload_validation_does_not_save_partial_selection(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import Ticket
+        trip = self.create()
+        self.admin()
+        person = trip.travellers.first()
+        response = self.client.post(f'/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/',
+            {'ticket': [SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 ticket'),
+                        SimpleUploadedFile('invalid.pdf', b'invalid content')]})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Ticket.objects.filter(traveller=person).exists())

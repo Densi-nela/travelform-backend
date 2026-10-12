@@ -83,11 +83,10 @@ The adapter posts JSON to the configured base URL using these documented endpoin
 
 | Attachments for this recipient | Endpoint under `/notification/email/` | Payload |
 | --- | --- | --- |
-| None | `sendEmailAttachment` | `emailAddress`, `subject`, `text`, `attachmentName: null`, `attachmentPath: null` |
-| One | `sendEmailAttachmentBytes` | `emailAddress`, `subject`, `text`, `attachmentName`, `bytes` |
-| Multiple | `sendEmailMultiAttachment` | `emailTo`, `subject`, `text`, `attachments: [{name, bytes}]` |
+| None | `sendEmail` | `emailAddress`, `subject`, `text` |
+| One or multiple | `sendEmailMultiAttachment` | `emailAddress`, `subject`, `text`, `attachments: [{fileName, contentType, data}]` |
 
-`text` contains the rendered Django HTML. Ticket contents are already base64-encoded by the outbox and are passed unchanged to `bytes`, avoiding double encoding. Tickets remain private in the database; no public attachment URL is needed. The service receives only its documented fields, not our internal event/template metadata. Plain text is retained for the SQS envelope but the internal API accepts a single body.
+`text` contains the rendered Django HTML. Ticket contents are already base64-encoded by the outbox and are passed unchanged to `data`, avoiding double encoding. Tickets remain private in the database; no public attachment URL is needed. The service receives only its documented fields, not our internal event/template metadata. Plain text is retained for the SQS envelope but the internal API accepts a single body.
 
 Requests use a 15-second timeout and propagate HTTP/network failures to the durable outbox. The supplied contract does not define idempotency support: a retry after a lost response can send a duplicate. API acceptance is not proof of inbox delivery.
 
@@ -150,3 +149,5 @@ This retries all pending notifications using the current routing setting; it sen
 Open an application in the admin dashboard and use **Email delivery → Retry email** beside the recipient. Only that undelivered notification is retried, with its original event snapshot, personal message and assigned tickets. The staff-only, CSRF-protected POST endpoint is `/api/admin/requests/<uuid>/notifications/<id>/retry/`. Successful deliveries cannot be resent here. Errors remain retryable and are shown without remote response bodies or credentials.
 
 A shared database claim prevents overlapping initial, admin and worker sends. Claims expire after ten minutes to recover from a crashed process. The internal service still does not promise idempotency: if it accepts a message but its response is lost, a later retry can duplicate it. Apply migration 0003 before running the updated application.
+
+Admins can select multiple PDF, PNG or JPEG attachments per traveller in one upload. The selection is validated and saved atomically. Limits remain 5 MB per file, 20 MB and 50 files per request. Each recipient receives only their assigned documents. Attachments are encoded in the backend and sent using the updated multi-attachment contract, including when there is just one file. Non-2xx HTTP responses and network failures leave the notification retryable.

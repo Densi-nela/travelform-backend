@@ -46,15 +46,11 @@ def send_email_via_api(email, attachments=None):
     if not attachments:
         endpoint = 'sendEmail'
         payload.update(emailAddress=email['recipient'])
-    elif len(attachments) == 1:
-        endpoint = 'sendEmailAttachmentBytes'
-        attachment = attachments[0]
-        payload.update(emailAddress=email['recipient'], attachmentName=attachment['filename'],
-                       bytes=attachment['content_base64'])
     else:
         endpoint = 'sendEmailMultiAttachment'
-        payload.update(emailTo=email['recipient'], attachments=[
-            {'name': item['filename'], 'bytes': item['content_base64']} for item in attachments
+        payload.update(emailAddress=email['recipient'], attachments=[
+            {'fileName': item['filename'], 'contentType': item['content_type'],
+             'data': item['content_base64']} for item in attachments
         ])
     # The outbox already base64-encodes ticket bytes; do not encode them again.
     headers = {'Content-Type': 'application/json'}
