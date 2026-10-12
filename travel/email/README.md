@@ -39,7 +39,7 @@ NOTIFICATION_SQS_QUEUE_URL=
 TRAVEL_ADMIN_EMAILS=travel-desk@your-company.example
 NOTIFICATION_API_URL=http://notification-apis-service.service.apainsurance.ke:8080
 FRONTEND_URL=https://travel.your-company.example
-EMAIL_LOGO_URL=https://www.apainsurance.org/images/AppResources/Apollo_Logo.png
+APA_LOGO_URL=https://www.apainsurance.org/images/AppResources/Apollo_Logo.png
 ```
 
 `TRAVEL_ADMIN_EMAILS` accepts a comma-separated list or distribution-list address. It is empty by default because no admin recipient has been supplied. Configure it before taking new approval actions. With no recipients configured, no admin email is created; the dashboard still shows requests awaiting admin action. Existing records are not automatically backfilled with admin notifications.

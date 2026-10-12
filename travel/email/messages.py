@@ -48,7 +48,7 @@ def build_email_context(item, attachments):
                         'return_time': p.return_time.strftime('%H:%M'), 'ticket_class': p.get_ticket_class_display()} for p in visible_people],
         'message': item.payload.get('message', ''), 'reason': item.payload.get('reason', ''),
         'attachments': [{'filename': a['filename'], 'type': 'Travel ticket'} for a in attachments],
-        'logo_url': settings.EMAIL_LOGO_URL,
+        'logo_url': settings.APA_LOGO_URL,
     }
     # Review credentials never appear in receipts, admin mail or decision mail.
     if event == 'supervisor_review':
