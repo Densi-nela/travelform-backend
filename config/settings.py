@@ -115,6 +115,25 @@ if not CSRF_TRUSTED_ORIGINS:
 
 CSRF_FAILURE_VIEW = 'travel.views.csrf_failure'
 
+env_cors_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+frontend_url = os.getenv("FRONTEND_URL", "").strip()
+
+if frontend_url:
+    env_cors_allowed_origins.append(frontend_url)
+
+if DEBUG:
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ] + env_cors_allowed_origins
+else:
+    CORS_ALLOWED_ORIGINS = env_cors_allowed_origins
+
 
 # =============================================================================
 # SESSION, COOKIE & HTTP SECURITY
