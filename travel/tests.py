@@ -828,3 +828,45 @@ class TravelWorkflowTests(TestCase):
                         SimpleUploadedFile('invalid.pdf', b'invalid content')]})
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Ticket.objects.filter(traveller=person).exists())
+
+
+    @patch('travel.notifications.send_notification_email')
+    def test_undelivered_admin_list_and_retry_remove_only_successful_mail(self, send):
+        trip = self.create()
+        url = '/api/admin/notifications/'
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.admin()
+        data = self.client.get(url).json()
+        self.assertEqual(data['count'], 2)
+        item = data['results'][0]
+        self.assertEqual(item['request_id'], str(trip.pk))
+        self.assertNotIn('payload', item)
+        self.assertNotIn(str(trip.approval_token), json.dumps(data))
+        retry_url = f"/api/admin/requests/{trip.pk}/notifications/{item['id']}/retry/"
+        send.side_effect = TimeoutError
+        self.assertEqual(self.post(retry_url, {}).status_code, 502)
+        data = self.client.get(url).json()
+        self.assertEqual(data['count'], 2)
+        failed = next(n for n in data['results'] if n['id'] == item['id'])
+        self.assertEqual(failed['attempts'], 1)
+        self.assertIn('timed out', failed['error_message'])
+        send.side_effect = None
+        self.assertEqual(self.post(retry_url, {}).status_code, 200)
+        data = self.client.get(url).json()
+        self.assertEqual(data['count'], 1)
+        self.assertNotIn(item['id'], [n['id'] for n in data['results']])
+
+    def test_undelivered_list_date_scope_and_pagination(self):
+        trip = self.create()
+        self.admin()
+        TravelRequest.objects.filter(pk=trip.pk).update(created_at=timezone.now().replace(year=2024, month=3, day=10))
+        for i in range(21):
+            Notification.objects.create(request=trip, event='applicant_receipt', recipient=f'person{i}@example.com')
+        self.assertEqual(self.client.get('/api/admin/notifications/?month=2024-03').json()['count'], 23)
+        self.assertEqual(self.client.get('/api/admin/notifications/?year=2025').json()['count'], 0)
+        self.assertEqual(self.client.get('/api/admin/notifications/?month=bad').status_code, 400)
+        first = self.client.get('/api/admin/notifications/?year=2024').json()
+        second = self.client.get('/api/admin/notifications/?year=2024&page=2').json()
+        self.assertEqual(len(first['results']), 20)
+        self.assertEqual(len(second['results']), 3)
+        self.assertEqual(first['results'][0]['id'], trip.notifications.order_by('-created_at', '-id').first().id)

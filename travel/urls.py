@@ -2,6 +2,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path('admin/notifications/', views.undelivered_notifications),
     path('admin/requests/<uuid:pk>/notifications/<int:notification_id>/retry/', views.retry_notification),
     path('admin/requests/new/', views.admin_submit),
     path('admin/requests/<uuid:pk>/decision/', views.admin_decision),
