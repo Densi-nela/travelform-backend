@@ -1,7 +1,15 @@
 from django.urls import path
-from . import views
+from . import views, portal_management
 
 urlpatterns = [
+    path('admin/departments/', portal_management.departments),
+    path('admin/departments/<int:pk>/', portal_management.departments),
+    path('admin/users/', portal_management.users),
+    path('admin/users/<int:pk>/', portal_management.users),
+    path('admin/requests/<uuid:pk>/send-tickets/', views.send_tickets),
+    path('departments/', views.department_options),
+    path('admin/requests/<uuid:pk>/documents/<int:document_id>/', views.supporting_document_download),
+    path('review/<uuid:token>/requests/<uuid:pk>/documents/<int:document_id>/', views.supporting_document_download),
     path('admin/notifications/', views.undelivered_notifications),
     path('admin/requests/<uuid:pk>/notifications/<int:notification_id>/retry/', views.retry_notification),
     path('admin/requests/new/', views.admin_submit),

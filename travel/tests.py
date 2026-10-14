@@ -4,14 +4,15 @@ import uuid
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.db import DatabaseError
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
-from .models import TravelRequest, AirTraveller, Notification
+from .models import TravelRequest, AirTraveller, Notification, Department, SupportingDocument
 from .notifications import deliver
 
 
-@override_settings(NOTIFICATION_MODE='console', TRAVEL_ADMIN_EMAILS=[], NOTIFICATION_USE_API_FOR_ALL_EMAILS=False)
+@override_settings(NOTIFICATION_MODE='console', NOTIFICATION_USE_API_FOR_ALL_EMAILS=False)
 class TravelWorkflowTests(TestCase):
     def test_health_is_public_and_not_cached(self):
         response = self.client.get('/api/health/')
@@ -27,10 +28,11 @@ class TravelWorkflowTests(TestCase):
 
     def setUp(self):
         departure = timezone.localdate() + timedelta(days=10)
-        self.payload = {'submission_key': str(uuid.uuid4()), 'destination': 'Mombasa, Kenya',
+        department = Department.objects.create(name='Operations')
+        self.payload = {'company': 'Apa General', 'department_id': department.pk, 'submission_key': str(uuid.uuid4()), 'destination': 'Mombasa, Kenya',
                         'event_description': 'Regional planning meeting', 'applicant_name': 'Jane Test',
                         'applicant_email': 'jane@example.com', 'supervisor_email': 'manager@example.com',
-                        'travellers': [{'name': 'Jane Test', 'email': 'jane@example.com',
+                        'travellers': [{'document_type': 'national_id', 'document_number': 'TEST1234', 'checked_luggage': True, 'name': 'Jane Test', 'email': 'jane@example.com',
                                         'departure_date': departure.isoformat(), 'departure_time': '09:00',
                                         'return_date': (departure + timedelta(days=2)).isoformat(),
                                         'return_time': '17:00', 'ticket_class': 'economy'}]}
@@ -45,6 +47,7 @@ class TravelWorkflowTests(TestCase):
 
     def admin(self):
         user = get_user_model().objects.create_user(username='admin', password='test-secret', is_staff=True)
+        user.groups.add(Group.objects.get_or_create(name='Travel admins')[0])
         self.client.force_login(user)
 
     @patch('travel.notifications.send_notification_email')
@@ -230,12 +233,12 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(self.client.get('/api/admin/analytics/?year=2026').json()['total'], 1)
         self.assertIn(2025, data['available_years'])
 
-    def test_analytics_status_filters_bars_but_preserves_distribution(self):
+    def test_analytics_status_filters_every_aggregate(self):
         self.analytics_fixture()
         data = self.client.get('/api/admin/analytics/?year=2025&status=approved').json()
         self.assertEqual(data['filtered_total'], 1)
         self.assertEqual(sum(m['requests'] for m in data['monthly']), 1)
-        self.assertEqual(data['counts']['pending'], 1)
+        self.assertEqual(data['counts']['pending'], 0)
         self.assertEqual(data['top_destinations'], [{'destination': 'Kisumu', 'requests': 1}])
         empty = self.client.get('/api/admin/analytics/?year=2024&status=rejected').json()
         self.assertEqual(empty['total'], 0)
@@ -368,7 +371,7 @@ class TravelWorkflowTests(TestCase):
             self.assertEqual(call.kwargs['reason'], 'Budget unavailable')
             self.assertEqual(call.kwargs['attachments'], [])
 
-    def test_ticket_validation_private_download_and_frozen_upload(self):
+    def test_ticket_validation_private_download_and_late_upload(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         trip = self.awaiting_admin()
         person = trip.travellers.first()
@@ -385,7 +388,7 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(self.client.get(download).status_code, 403)
         self.client.force_login(get_user_model().objects.get(username='admin'))
         self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'})
-        self.assertEqual(self.client.post(url, {'ticket': SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 sample')}).status_code, 409)
+        self.assertEqual(self.client.post(url, {'ticket': SimpleUploadedFile('ticket.pdf', b'%PDF-1.7 sample')}).status_code, 201)
 
     def test_global_date_filter_scopes_metrics_list_and_notifications(self):
         trip = self.awaiting_admin()
@@ -423,9 +426,11 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(notice.payload['status'], 'awaiting_admin')
 
 
-    @override_settings(TRAVEL_ADMIN_EMAILS=['desk@example.com', 'DESK@example.com'])
     @patch('travel.notifications.send_notification_email')
     def test_admin_review_notice_is_deduplicated_and_has_login_link_only(self, send):
+        for name, email in [('desk1', 'desk@example.com'), ('desk2', 'DESK@example.com')]:
+            user = get_user_model().objects.create_user(username=name, email=email)
+            user.groups.add(Group.objects.get_or_create(name='Travel admins')[0])
         trip = self.create()
         with self.captureOnCommitCallbacks(execute=True):
             response = self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'})
@@ -442,9 +447,9 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(self.post(f'/api/review/{trip.approval_token}/', {'status': 'approved'}).status_code, 409)
         self.assertEqual(Notification.objects.filter(event='admin_review').count(), 1)
 
-    @override_settings(TRAVEL_ADMIN_EMAILS=['desk@example.com'])
     def test_admin_created_request_queues_admin_email(self):
         self.admin()
+        get_user_model().objects.filter(username='admin').update(email='desk@example.com')
         response = self.post('/api/admin/requests/new/', self.payload)
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Notification.objects.filter(event='admin_review').count(), 1)
@@ -611,7 +616,8 @@ class TravelWorkflowTests(TestCase):
     def test_public_form_token_recovers_after_admin_login_rotation(self):
         client = Client(enforce_csrf_checks=True)
         old_token = client.get('/api/session/').json()['csrf_token']
-        get_user_model().objects.create_user(username='rotation-admin', password='test-secret', is_staff=True)
+        rotation_user = get_user_model().objects.create_user(username='rotation-admin', password='test-secret', is_staff=True)
+        rotation_user.groups.add(Group.objects.get_or_create(name='Travel admins')[0])
         login_response = client.post('/api/login/', json.dumps({'username': 'rotation-admin', 'password': 'test-secret'}),
             content_type='application/json', HTTP_X_CSRFTOKEN=old_token)
         self.assertEqual(login_response.status_code, 200)
@@ -870,3 +876,402 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(len(first['results']), 20)
         self.assertEqual(len(second['results']), 3)
         self.assertEqual(first['results'][0]['id'], trip.notifications.order_by('-created_at', '-id').first().id)
+
+
+    def test_organisation_identity_validation_and_department_search(self):
+        Department.objects.create(name='Finance')
+        Department.objects.create(name='Former department', active=False)
+        result = self.client.get('/api/departments/?search=fin').json()['results']
+        self.assertEqual([r['name'] for r in result], ['Finance'])
+        self.assertNotIn('Former department', [r['name'] for r in self.client.get('/api/departments/').json()['results']])
+        for key, value in [('company', 'Unknown'), ('department_id', 999999)]:
+            payload = {**self.payload, key: value}
+            self.assertEqual(self.post('/api/requests/', payload).status_code, 400)
+        for key, value in [('document_type', 'invalid'), ('document_number', ''), ('checked_luggage', 'yes')]:
+            payload = copy.deepcopy(self.payload)
+            payload['travellers'][0][key] = value
+            self.assertEqual(self.post('/api/requests/', payload).status_code, 400)
+        trip = self.create()
+        detail = self.client.get(f'/api/review/{trip.approval_token}/').json()
+        self.assertEqual(detail['company'], 'Apa General')
+        self.assertEqual(detail['department'], 'Operations')
+        self.assertEqual(detail['travellers'][0]['document_number'], 'TEST1234')
+        self.assertTrue(detail['travellers'][0]['checked_luggage'])
+        self.admin()
+        data = self.client.get('/api/admin/analytics/?company=Apa%20General').json()
+        self.assertEqual(data['companies'], [{'company': 'Apa General', 'requests': 1}])
+        self.assertEqual(data['departments'], [{'department__name': 'Operations', 'requests': 1}])
+        self.assertEqual(self.client.get('/api/admin/analytics/?company=APA%20life').json()['filtered_total'], 0)
+
+    @override_settings(TRAVEL_S3_BUCKET='test-private', TRAVEL_S3_REGION='eu-west-1')
+    @patch('travel.supporting_documents.boto3.client')
+    def test_supporting_documents_private_s3_upload_and_access(self, boto):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        storage = boto.return_value
+        files = lambda: [SimpleUploadedFile('memo.pdf', b'%PDF-1.7 memo'), SimpleUploadedFile('approval.eml', b'From: supervisor@example.com\r\nSubject: Approval\r\n\r\nApproved.')]
+        response = self.client.post('/api/requests/', {'payload': json.dumps(self.payload), 'supporting_documents': files()})
+        self.assertEqual(response.status_code, 201, response.content)
+        trip = TravelRequest.objects.get()
+        self.assertEqual(trip.supporting_documents.count(), 2)
+        self.assertEqual(storage.put_object.call_count, 2)
+        self.assertEqual(storage.put_object.call_args.kwargs['ServerSideEncryption'], 'AES256')
+        self.assertNotIn('ACL', storage.put_object.call_args.kwargs)
+        self.assertEqual(self.client.post('/api/requests/', {'payload': json.dumps(self.payload), 'supporting_documents': files()}).status_code, 200)
+        self.assertEqual(storage.put_object.call_count, 2)
+        document = trip.supporting_documents.first()
+        url = f'/api/admin/requests/{trip.pk}/documents/{document.pk}/'
+        self.assertEqual(self.client.get(url).status_code, 403)
+        wrong = f'/api/review/{uuid.uuid4()}/requests/{trip.pk}/documents/{document.pk}/'
+        self.assertEqual(self.client.get(wrong).status_code, 403)
+        storage.generate_presigned_url.return_value = 'https://s3.example.test/private-download'
+        correct = f'/api/review/{trip.approval_token}/requests/{trip.pk}/documents/{document.pk}/'
+        self.assertEqual(self.client.get(correct).status_code, 302)
+        self.assertEqual(storage.generate_presigned_url.call_args.kwargs['ExpiresIn'], 300)
+        self.admin()
+        self.assertEqual(self.client.get(url).status_code, 302)
+        detail = self.client.get(f'/api/admin/requests/{trip.pk}/').json()
+        self.assertNotIn(document.object_key, json.dumps(detail))
+
+    @override_settings(TRAVEL_S3_BUCKET='test-private', TRAVEL_S3_REGION='eu-west-1')
+    @patch('travel.supporting_documents.boto3.client')
+    def test_supporting_upload_failure_rolls_back_and_cleans_up(self, boto):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        storage = boto.return_value
+        storage.put_object.side_effect = [None, TimeoutError()]
+        result = self.client.post('/api/requests/', {'payload': json.dumps(self.payload), 'supporting_documents': [
+            SimpleUploadedFile('memo.pdf', b'%PDF-1.7 memo'), SimpleUploadedFile('approval.pdf', b'%PDF-1.7 approval')]})
+        self.assertEqual(result.status_code, 503)
+        self.assertFalse(TravelRequest.objects.exists())
+        self.assertFalse(SupportingDocument.objects.exists())
+        self.assertFalse(Notification.objects.exists())
+        self.assertEqual(storage.delete_object.call_count, 2)
+
+    @patch('travel.supporting_documents.boto3.client')
+    def test_supporting_invalid_file_rejected_before_storage(self, boto):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        result = self.client.post('/api/requests/', {'payload': json.dumps(self.payload), 'supporting_documents': SimpleUploadedFile('bad.pdf', b'not a PDF')})
+        self.assertEqual(result.status_code, 400)
+        self.assertFalse(TravelRequest.objects.exists())
+        boto.assert_not_called()
+
+    @override_settings(TRAVEL_S3_BUCKET='test-private', TRAVEL_S3_REGION='eu-west-1')
+    @patch('travel.supporting_documents.boto3.client')
+    def test_admin_submission_accepts_shared_supporting_document(self, boto):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.admin()
+        payload = {**self.payload, 'supervisor_email': ''}
+        result = self.client.post('/api/admin/requests/new/', {'payload': json.dumps(payload), 'supporting_documents': SimpleUploadedFile('memo.pdf', b'%PDF-1.7 memo')})
+        self.assertEqual(result.status_code, 201, result.content)
+        self.assertEqual(result.json()['supervisor_status'], 'not_required')
+        self.assertEqual(len(result.json()['supporting_documents']), 1)
+
+
+    @patch('travel.notifications.send_notification_email')
+    def test_late_tickets_partial_delivery_retry_and_additional_batch(self, send):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import Ticket
+        self.payload['travellers'].append({**self.payload['travellers'][0], 'name': 'Other', 'email': 'other@example.com'})
+        trip = self.create()
+        self.admin()
+        self.post(f'/api/admin/requests/{trip.pk}/decision/', {'status': 'approved'})
+        url = f'/api/admin/requests/{trip.pk}/send-tickets/'
+        def pending():
+            return self.client.get('/api/admin/metrics/').json()['awaiting_tickets']
+        self.assertEqual(pending(), 1)
+        self.assertEqual(self.client.get('/api/admin/requests/?status=awaiting_tickets').json()['count'], 1)
+        people = list(trip.travellers.all())
+        def upload(person, name):
+            response = self.client.post(f'/api/admin/requests/{trip.pk}/travellers/{person.pk}/tickets/',
+                {'ticket': SimpleUploadedFile(name, b'%PDF-1.7 ticket')})
+            self.assertEqual(response.status_code, 201)
+            return response.json()['id']
+        first = upload(people[0], 'first.pdf')
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post(url, {'traveller_messages': {str(people[0].pk): 'Your instructions'}}).status_code, 200)
+        self.assertEqual(send.call_args.args[0], people[0].email)
+        self.assertEqual(len(send.call_args.kwargs['attachments']), 1)
+        self.assertEqual(send.call_args.kwargs['event'], 'tickets')
+        self.assertEqual(pending(), 1)
+        self.assertEqual(self.post(url, {}).status_code, 409)
+        self.assertEqual(self.client.delete(f'/api/admin/tickets/{first}/').status_code, 409)
+        upload(people[1], 'second.pdf')
+        send.side_effect = TimeoutError
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post(url, {}).status_code, 200)
+        self.assertEqual(pending(), 1)
+        failed = trip.notifications.get(event='tickets', recipient=people[1].email)
+        self.assertIsNone(failed.delivered_at)
+        send.side_effect = None
+        self.assertEqual(self.post(f'/api/admin/requests/{trip.pk}/notifications/{failed.pk}/retry/', {}).status_code, 200)
+        self.assertEqual(pending(), 0)
+        upload(people[0], 'extra.pdf')
+        self.assertEqual(pending(), 1)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post(url, {}).status_code, 200)
+        self.assertEqual([a['filename'] for a in send.call_args.kwargs['attachments']], ['extra.pdf'])
+        self.assertEqual(pending(), 0)
+        trip.refresh_from_db()
+        self.assertEqual(trip.status, 'approved')
+        detail = self.client.get(f'/api/admin/requests/{trip.pk}/').json()
+        self.assertTrue(all(p['tickets_sent'] for p in detail['travellers']))
+
+    def test_send_tickets_requires_staff_and_approval(self):
+        trip = self.create()
+        url = f'/api/admin/requests/{trip.pk}/send-tickets/'
+        self.assertEqual(self.post(url, {}).status_code, 403)
+        self.admin()
+        self.assertEqual(self.post(url, {}).status_code, 409)
+        self.assertEqual(self.client.get(url).status_code, 405)
+
+    def test_ticket_email_template_is_private_and_distinct_from_approval(self):
+        from .email.messages import build_email
+        trip = self.create()
+        notice = Notification.objects.create(request=trip, event='tickets', recipient=trip.applicant_email,
+            payload={'status': 'approved', 'recipient_role': 'traveller'})
+        email = build_email(notice, [{'filename': 'ticket.pdf'}])
+        self.assertIn('Your travel tickets', email['subject'])
+        self.assertNotIn(str(trip.approval_token), email['html_body'])
+        self.assertIn('ticket.pdf', email['html_body'])
+
+
+    def test_historical_ticket_delivery_backfill(self):
+        import importlib
+        from django.apps import apps
+        from .models import Ticket
+        trip = self.create()
+        TravelRequest.objects.filter(pk=trip.pk).update(status='approved')
+        ticket = Ticket.objects.create(traveller=trip.travellers.first(), filename='old.pdf', content_type='application/pdf', content=b'%PDF-', size=5)
+        notice = Notification.objects.create(request=trip, event='admin_decision', recipient=trip.applicant_email,
+            payload={'status': 'approved', 'ticket_ids': [ticket.pk]}, delivered_at=timezone.now())
+        importlib.import_module('travel.migrations.0006_backfill_ticket_notifications').link_existing(apps, None)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.notification_id, notice.pk)
+        self.admin()
+        self.assertEqual(self.client.get('/api/admin/metrics/').json()['awaiting_tickets'], 0)
+
+
+    def test_combined_analytics_filters_scope_all_cards_and_charts(self):
+        self.analytics_fixture()
+        finance = Department.objects.create(name='Finance analytics')
+        TravelRequest.objects.filter(status='approved').update(company='APA life', department=finance)
+        department = self.payload['department_id']
+        cases = [
+            ({'year': 2025, 'status': 'pending', 'company': 'Apa General', 'department': department}, 1, 2),
+            ({'year': 2025, 'status': 'approved', 'company': 'APA life', 'department': finance.pk}, 1, 1),
+            ({'year': 2025, 'status': 'approved', 'company': 'Apa General', 'department': department}, 0, 0),
+            ({'year': 2025, 'status': 'pending', 'company': 'APA life', 'department': finance.pk}, 0, 0),
+            ({'year': 2025, 'status': 'pending', 'email': 'jane@example.com', 'department': department}, 1, 2),
+            ({'year': 2025, 'status': 'approved', 'email': 'jane@example.com'}, 0, 0),
+        ]
+        for filters, total, travellers in cases:
+            with self.subTest(filters=filters):
+                data = self.client.get('/api/admin/analytics/', filters).json()
+                self.assertEqual(data['total'], total)
+                self.assertEqual(data['filtered_total'], total)
+                self.assertEqual(data['travellers'], travellers)
+                self.assertEqual(sum(data['counts'].values()), total)
+                self.assertEqual(data['counts'][filters['status']], total)
+                for key in ['monthly', 'travel_types', 'companies', 'departments', 'top_destinations']:
+                    self.assertEqual(sum(row['requests'] for row in data[key]), total)
+
+
+    def test_ticket_cost_validation_permissions_and_clearing(self):
+        from .models import Ticket
+        trip = self.create()
+        ticket = Ticket.objects.create(traveller=trip.travellers.first(), filename='ticket.pdf', content_type='application/pdf', content=b'%PDF-', size=5)
+        url = f'/api/admin/tickets/{ticket.pk}/'
+        self.assertEqual(self.client.patch(url, json.dumps({'cost': '100.10'}), content_type='application/json').status_code, 403)
+        self.admin()
+        for invalid in ['-1', 'NaN', 'Infinity', '1.001', '10000000000', 'invalid', True]:
+            self.assertEqual(self.client.patch(url, json.dumps({'cost': invalid}), content_type='application/json').status_code, 400)
+        for valid in ['100.10', '0', None]:
+            response = self.client.patch(url, json.dumps({'cost': valid}), content_type='application/json')
+            self.assertEqual(response.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertIsNone(ticket.cost)
+
+    def test_cross_year_month_range_and_cost_aggregates(self):
+        from .models import Ticket
+        from decimal import Decimal
+        self.analytics_fixture()
+        trips = list(TravelRequest.objects.order_by('created_at'))
+        for trip, amount in zip(trips, ['100.10', '200.20', '300.30']):
+            Ticket.objects.create(traveller=trip.travellers.first(), filename='ticket.pdf', content_type='application/pdf', content=b'%PDF-', size=5, cost=amount)
+        # Extra unpriced files must not affect spending or request counts.
+        Ticket.objects.create(traveller=trips[1].travellers.first(), filename='memo.pdf', content_type='application/pdf', content=b'%PDF-', size=5)
+        data = self.client.get('/api/admin/analytics/?from_month=2025-12&to_month=2026-01').json()
+        self.assertEqual(data['total'], 2)
+        self.assertEqual([m['label'] for m in data['monthly']], ['Dec 2025', 'Jan 2026'])
+        self.assertEqual([m['requests'] for m in data['monthly']], [1, 1])
+        self.assertEqual(Decimal(data['total_cost']), Decimal('500.50'))
+        self.assertEqual(data['costed_tickets'], 2)
+        for key in ['cost_by_company', 'cost_by_department']:
+            self.assertEqual(sum(Decimal(row['amount']) for row in data[key]), Decimal('500.50'))
+        month = self.client.get('/api/admin/analytics/?month=2025-12&status=approved').json()
+        self.assertEqual(month['total'], 1)
+        self.assertEqual(len(month['monthly']), 1)
+        self.assertEqual(Decimal(month['total_cost']), Decimal('200.20'))
+        empty = self.client.get('/api/admin/analytics/?month=2025-12&status=pending').json()
+        self.assertEqual(Decimal(empty['total_cost']), 0)
+        for query in ['from_month=2026-01&to_month=2025-12', 'from_month=2025-01', 'month=2025-13', 'month=2025-01&from_month=2025-01&to_month=2025-02']:
+            self.assertEqual(self.client.get('/api/admin/analytics/?'+query).status_code, 400)
+
+
+    def test_roles_separate_travel_portal_from_developer_admin(self):
+        from .user_forms import PortalUserCreationForm
+        developer = get_user_model().objects.create_user(username='developer', password='test-secret', is_staff=True)
+        developer.groups.add(Group.objects.get_or_create(name='Developers')[0])
+        self.client.force_login(developer)
+        self.assertEqual(self.client.get('/api/admin/metrics/').status_code, 403)
+        self.assertFalse(self.client.get('/api/session/').json()['is_admin'])
+        self.assertEqual(self.client.get('/django-admin/auth/user/').status_code, 200)
+        self.assertEqual(self.client.get('/django-admin/travel/department/add/').status_code, 200)
+        form = PortalUserCreationForm(data={'username': 'travel-desk', 'email': 'Desk@example.com',
+            'first_name': 'Travel', 'last_name': 'Desk', 'role': 'Travel admins',
+            'password1': 'Strong-Test-Password-451!', 'password2': 'Strong-Test-Password-451!'})
+        self.assertTrue(form.is_valid(), form.errors)
+        user = form.save()
+        self.assertFalse(user.is_staff)
+        self.assertTrue(user.groups.filter(name='Travel admins').exists())
+        self.client.logout()
+        response = self.post('/api/login/', {'username': 'travel-desk', 'password': 'Strong-Test-Password-451!'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get('/api/admin/metrics/').status_code, 200)
+        self.assertEqual(self.client.get('/django-admin/auth/user/').status_code, 302)
+        user.is_active = False
+        user.save()
+        self.assertEqual(self.client.get('/api/admin/metrics/').status_code, 403)
+
+    @override_settings(TRAVEL_ADMIN_EMAILS=['ignored@example.com'])
+    def test_notification_recipients_come_only_from_active_travel_users(self):
+        from .notifications import queue_admin_review
+        trip = self.create()
+        for name, role, active, email in [('active','Travel admins',True,'desk@example.com'),
+                ('duplicate','Travel admins',True,'DESK@example.com'),
+                ('inactive','Travel admins',False,'inactive@example.com'),
+                ('developer','Developers',True,'developer@example.com')]:
+            user = get_user_model().objects.create_user(username=name, email=email, is_active=active)
+            user.groups.add(Group.objects.get_or_create(name=role)[0])
+        queue_admin_review(trip)
+        self.assertEqual(list(trip.notifications.filter(event='admin_review').values_list('recipient',flat=True)), ['desk@example.com'])
+
+    def test_developer_form_and_legacy_account_role_migration(self):
+        from .user_forms import PortalUserCreationForm
+        from django.apps import apps
+        import importlib
+        old = get_user_model().objects.create_user(username='legacy', password='legacy-password', is_staff=True)
+        root = get_user_model().objects.create_superuser(username='root', password='root-password', email='root@example.com')
+        original_hash = old.password
+        importlib.import_module('travel.migrations.0008_user_roles').assign_roles(apps, None)
+        old.refresh_from_db()
+        self.assertEqual(old.password, original_hash)
+        self.assertFalse(old.is_staff)
+        self.assertTrue(old.groups.filter(name='Travel admins').exists())
+        self.assertTrue(root.groups.filter(name='Developers').exists())
+        form = PortalUserCreationForm(data={'username':'new-developer', 'email':'dev@example.com', 'role':'Developers',
+            'password1':'Strong-Test-Password-451!', 'password2':'Strong-Test-Password-451!'})
+        self.assertTrue(form.is_valid(), form.errors)
+        developer = form.save()
+        self.assertTrue(developer.is_staff)
+        self.assertTrue(developer.groups.filter(name='Developers').exists())
+
+
+    def test_developer_creates_and_changes_user_role_in_django_admin(self):
+        developer = get_user_model().objects.create_user(username='dev-manager', password='test-secret', is_staff=True)
+        developer.groups.add(Group.objects.get_or_create(name='Developers')[0])
+        self.client.force_login(developer)
+        response = self.client.post('/django-admin/auth/user/add/', {
+            'username': 'managed-admin', 'email': 'managed@example.com', 'first_name': 'Managed', 'last_name': 'Admin',
+            'role': 'Travel admins', 'password1': 'Strong-Travel-Pass-887!', 'password2': 'Strong-Travel-Pass-887!', '_save': 'Save'})
+        self.assertEqual(response.status_code, 302, response.content[:1000])
+        user = get_user_model().objects.get(username='managed-admin')
+        self.assertTrue(user.check_password('Strong-Travel-Pass-887!'))
+        self.assertFalse(user.is_staff)
+        self.assertTrue(user.groups.filter(name='Travel admins').exists())
+        response = self.client.post(f'/django-admin/auth/user/{user.pk}/change/', {
+            'username': user.username, 'email': user.email, 'first_name': 'Managed', 'last_name': 'Developer',
+            'role': 'Developers', 'is_active': 'on', '_save': 'Save'})
+        self.assertEqual(response.status_code, 302, response.content[:1000])
+        user.refresh_from_db()
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.groups.filter(name='Developers').exists())
+        self.assertFalse(user.groups.filter(name='Travel admins').exists())
+
+
+    def test_portal_admin_user_management_and_role_boundary(self):
+        payload = {'username': 'new-travel-admin', 'email': 'new@example.com', 'first_name': 'New', 'last_name': 'Admin', 'password': 'Strong-Password-55!', 'active': True}
+        self.assertEqual(self.post('/api/admin/users/', payload).status_code, 403)
+        self.admin()
+        self.assertEqual(self.post('/api/admin/users/', {**payload, 'role': 'Developers'}).status_code, 403)
+        self.assertEqual(self.post('/api/admin/users/', {**payload, 'password': 'short'}).status_code, 400)
+        result = self.post('/api/admin/users/', payload)
+        self.assertEqual(result.status_code, 201, result.content)
+        user = get_user_model().objects.get(username=payload['username'])
+        self.assertTrue(user.check_password(payload['password']))
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertTrue(user.groups.filter(name='Travel admins').exists())
+        self.assertNotIn('password', result.json())
+        self.assertEqual(self.post('/api/admin/users/', payload).status_code, 400)
+        update = {'email': user.email, 'first_name': 'Updated', 'last_name': 'Admin', 'active': False}
+        response = self.client.patch(f'/api/admin/users/{user.pk}/', json.dumps(update), content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        user.refresh_from_db()
+        self.assertFalse(user.is_active)
+        myself = get_user_model().objects.get(username='admin')
+        self.assertEqual(self.client.patch(f'/api/admin/users/{myself.pk}/', json.dumps(update), content_type='application/json').status_code, 400)
+        developer = get_user_model().objects.create_superuser(username='protected-developer', email='dev@example.com', password='test-password')
+        self.assertEqual(self.client.patch(f'/api/admin/users/{developer.pk}/', json.dumps(update), content_type='application/json').status_code, 404)
+        self.assertNotIn(developer.pk, [u['id'] for u in self.client.get('/api/admin/users/').json()['results']])
+        secure = Client(enforce_csrf_checks=True)
+        secure.force_login(myself)
+        self.assertEqual(self.post('/api/admin/users/', payload, client=secure).status_code, 403)
+
+    def test_portal_department_configuration_and_public_picker(self):
+        self.assertEqual(self.client.get('/api/admin/departments/').status_code, 403)
+        self.admin()
+        result = self.post('/api/admin/departments/', {'name': 'Legal', 'active': True})
+        self.assertEqual(result.status_code, 201)
+        pk = result.json()['id']
+        self.assertEqual(self.post('/api/admin/departments/', {'name': 'legal'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/departments/?search=Legal').json()['results'][0]['id'], pk)
+        result = self.client.patch(f'/api/admin/departments/{pk}/', json.dumps({'name':'Legal affairs', 'active':False}), content_type='application/json')
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(self.client.get('/api/departments/?search=Legal').json()['results'], [])
+        listed = self.client.get('/api/admin/departments/?search=Legal').json()
+        self.assertEqual(listed['count'], 1)
+        self.assertFalse(listed['results'][0]['active'])
+
+
+class DeveloperPortalDeliveryTests(TestCase):
+    @override_settings(DEBUG=False, ALLOWED_HOSTS=['testserver'],
+                       CSRF_TRUSTED_ORIGINS=['http://127.0.0.1:5173'])
+    def test_admin_login_accepts_valid_csrf_and_rejects_missing_token(self):
+        client = Client(enforce_csrf_checks=True)
+        response = client.get('/django-admin/login/')
+        self.assertEqual(response.status_code, 200)
+        token = client.cookies['csrftoken'].value
+        payload = {'username': 'nonexistent-test-user', 'password': 'invalid-password'}
+        response = client.post('/django-admin/login/', payload,
+                               HTTP_ORIGIN='http://127.0.0.1:5173')
+        self.assertEqual(response.status_code, 403)
+        response = client.post('/django-admin/login/',
+                               {**payload, 'csrfmiddlewaretoken': token},
+                               HTTP_ORIGIN='http://127.0.0.1:5173')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Please enter the correct')
+
+    def test_admin_styles_served_with_debug_disabled(self):
+        import shutil
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from django.contrib.staticfiles import finders
+        with TemporaryDirectory() as directory:
+            destination = Path(directory) / 'admin/css/base.css'
+            destination.parent.mkdir(parents=True)
+            shutil.copyfile(finders.find('admin/css/base.css'), destination)
+            with override_settings(DEBUG=False, STATIC_ROOT=directory, ALLOWED_HOSTS=['testserver']):
+                response = Client().get('/static/admin/css/base.css')
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('text/css', response['Content-Type'])
+                response.close()

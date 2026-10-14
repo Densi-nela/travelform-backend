@@ -1,0 +1,5 @@
+{% extends "travel/email/base.html" %}
+{% block content %}
+<p>Your travel tickets and documents for <strong>{{ destination }}</strong> are attached. Your request remains approved.</p>
+{% include "travel/email/_notes.html" %}{% include "travel/email/_tickets.html" %}{% include "travel/email/_details.html" %}
+{% endblock %}

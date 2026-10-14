@@ -2,7 +2,22 @@ import uuid
 from django.db import models
 
 
+class Department(models.Model):
+    name = models.CharField(max_length=150, unique=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class TravelRequest(models.Model):
+    COMPANIES = [(v, v) for v in ['Apa General', 'APA life', 'Apollo Asset', 'Gordon Court', 'APA Micro']]
+    company = models.CharField(max_length=50, choices=COMPANIES, blank=True)
+    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.PROTECT)
+
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending supervisor'
         AWAITING_ADMIN = 'awaiting_admin', 'Awaiting admin action'
@@ -33,6 +48,10 @@ class TravelRequest(models.Model):
 
 
 class AirTraveller(models.Model):
+    document_type = models.CharField(max_length=20, choices=[('national_id', 'National ID'), ('passport', 'Passport')], blank=True)
+    document_number = models.CharField(max_length=50, blank=True)
+    checked_luggage = models.BooleanField(default=False)
+
     request = models.ForeignKey(TravelRequest, related_name='travellers', on_delete=models.CASCADE)
     name = models.CharField(max_length=150)
     email = models.EmailField(db_index=True)
@@ -47,6 +66,8 @@ class AirTraveller(models.Model):
 
 
 class Ticket(models.Model):
+    cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    notification = models.ForeignKey("Notification", null=True, blank=True, on_delete=models.PROTECT, related_name="assigned_tickets")
     traveller = models.ForeignKey(AirTraveller, related_name="tickets", on_delete=models.CASCADE)
     filename = models.CharField(max_length=200)
     content_type = models.CharField(max_length=100)
@@ -66,4 +87,13 @@ class Notification(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['request', 'event', 'recipient'], name='one_notification_per_recipient')]
+        constraints = [models.UniqueConstraint(fields=['request', 'event', 'recipient'], name='one_notification_per_recipient', condition=~models.Q(event='tickets'))]
+
+
+class SupportingDocument(models.Model):
+    request = models.ForeignKey(TravelRequest, related_name='supporting_documents', on_delete=models.CASCADE)
+    filename = models.CharField(max_length=200)
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveIntegerField()
+    object_key = models.CharField(max_length=500, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)

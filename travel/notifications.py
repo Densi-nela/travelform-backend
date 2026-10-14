@@ -4,8 +4,10 @@ import logging
 from datetime import timedelta
 from django.db.models import Q
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from .models import Notification, Ticket
+from .roles import travel_admin_users
 from .email.messages import build_email
 from .email.transports import dispatch_email
 from .email.errors import delivery_error_code
@@ -44,7 +46,7 @@ def deliver(notification_id):
     item.attempts += 1
     try:
         attachments = [{'filename': t.filename, 'content_type': t.content_type, 'content_base64': base64.b64encode(bytes(t.content)).decode('ascii')}
-                       for t in Ticket.objects.filter(pk__in=item.payload.get('ticket_ids', []) if item.event == 'admin_decision' and status == 'approved' else [], traveller__request=trip, traveller__email__iexact=item.recipient)]
+                       for t in Ticket.objects.filter(pk__in=item.payload.get('ticket_ids', []) if item.event in ('admin_decision', 'tickets') and status == 'approved' else [], traveller__request=trip, traveller__email__iexact=item.recipient)]
         send_notification_email(item.recipient, item.payload.get('employee_name', trip.applicant_name),
                                 trip.travellers.order_by('departure_date').first().departure_date, link,
                                 status=status, event=item.event,
@@ -70,9 +72,13 @@ def deliver_many(ids):
 def queue_admin_review(trip):
     """Call inside the workflow transaction after supervisor approval or admin creation."""
     ids = []
-    for recipient in sorted({value.strip().lower() for value in settings.TRAVEL_ADMIN_EMAILS if value.strip()}):
+    for recipient in sorted({value.strip().lower() for value in travel_admin_users().values_list('email', flat=True) if value.strip()}):
         from django.core.validators import validate_email
-        validate_email(recipient)
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            logger.warning('Skipping travel-admin account with an invalid email address.')
+            continue
         notice, _ = Notification.objects.get_or_create(request=trip, event='admin_review', recipient=recipient,
             defaults={'payload': {'status': 'awaiting_admin', 'recipient_role': 'admin'}})
         ids.append(notice.pk)

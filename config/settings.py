@@ -42,6 +42,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -142,7 +143,7 @@ else:
 # information, and rely on Django's defaults for other security headers.
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
-SECURE_REFERRER_POLICY = 'no-referrer'
+SECURE_REFERRER_POLICY = 'same-origin'
 
 
 
@@ -175,8 +176,19 @@ NOTIFICATION_AWS_REGION = os.getenv('AWS_REGION', '')
 NOTIFICATION_SQS_QUEUE_NAME = os.getenv('NOTIFICATION_SQS_QUEUE_NAME', 'notifications-email-queue')
 NOTIFICATION_SQS_QUEUE_URL = os.getenv('NOTIFICATION_SQS_QUEUE_URL', '')
 
-# Admin email addresses receive travel booking notifications. (to be removed later as the db is the source of truth)
-TRAVEL_ADMIN_EMAILS = [address.strip() for address in os.getenv('TRAVEL_ADMIN_EMAILS', '').split(',') if address.strip()]
 
 # Apa Logo
 APA_LOGO_URL = 'https://www.apainsurance.org/images/AppResources/Apollo_Logo.png'
+
+# =============================================================================
+# AWS S3 — PRIVATE APPLICATION SUPPORTING DOCUMENTS
+# =============================================================================
+# Uses the same standard AWS credential chain as SQS (role, profile or environment).
+TRAVEL_S3_BUCKET = os.getenv('TRAVEL_S3_BUCKET', '').strip()
+TRAVEL_S3_REGION = os.getenv('TRAVEL_S3_REGION', os.getenv('AWS_REGION', '')).strip()
+TRAVEL_S3_PREFIX = os.getenv('TRAVEL_S3_PREFIX', 'travel/supporting-documents').strip('/')
+# Optional KMS key ARN. Without it uploads use S3-managed AES256 encryption.
+TRAVEL_S3_KMS_KEY_ID = os.getenv('TRAVEL_S3_KMS_KEY_ID', '').strip()
+TRAVEL_S3_DOWNLOAD_TTL = 300
+DATA_UPLOAD_MAX_MEMORY_SIZE = 1_048_576
+DATA_UPLOAD_MAX_NUMBER_FILES = 50

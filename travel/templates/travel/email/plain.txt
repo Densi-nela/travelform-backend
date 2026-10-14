@@ -15,6 +15,7 @@ This link is private. Do not forward it.
 {% elif event == "admin_review" %}This request is waiting for your final admin decision. Open the request to review the details, assign tickets and add travel instructions.
 Admin workspace (login required): {{ admin_url }}
 {% elif event == "decision" %}{% if status == "awaiting_admin" %}Your supervisor has approved your application. It is now waiting for admin approval. You will receive another email with the final decision.{% else %}Your supervisor has declined your application. It will not proceed to admin approval.{% endif %}
+{% elif event == "tickets" %}Your travel tickets and documents are attached. Your request remains approved.
 {% else %}The travel administrator has {% if status == "approved" %}approved{% else %}declined{% endif %} the travel request submitted by {{ applicant_name }}.
 {% if status == "approved" %}Each traveller receives their own notification and any tickets assigned to their email address.{% else %}No tickets are issued with this notification.{% endif %}
 {% endif %}

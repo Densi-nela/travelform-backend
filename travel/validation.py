@@ -33,6 +33,13 @@ def submission(data, admin=False):
     trip = {'submission_key': key, 'applicant_name': text(data, 'applicant_name', 150),
             'applicant_email': email(data, 'applicant_email'), 'supervisor_email': '' if admin else email(data, 'supervisor_email'),
             'destination': text(data, 'destination', 200), 'event_description': text(data, 'event_description', 5000)}
+    from .models import TravelRequest, Department
+    if data.get('company') not in dict(TravelRequest.COMPANIES):
+        raise ValueError('Choose a company.')
+    department = data.get('department_id')
+    if isinstance(department, bool) or not str(department).isdigit() or not Department.objects.filter(pk=department, active=True).exists():
+        raise ValueError('Choose an active department.')
+    trip.update(company=data['company'], department_id=int(department))
     if trip['applicant_email'] == trip['supervisor_email']:
         raise ValueError('Supervisor email must differ from applicant email.')
     travellers = data.get('travellers')
@@ -44,6 +51,13 @@ def submission(data, admin=False):
             if not isinstance(person, dict):
                 raise ValueError('Invalid traveller.')
             row = {'name': text(person, 'name', 150), 'email': email(person, 'email')}
+            row['document_type'] = person.get('document_type')
+            if row['document_type'] not in ['national_id', 'passport']:
+                raise ValueError('Choose National ID or Passport.')
+            row['document_number'] = text(person, 'document_number', 50)
+            if not isinstance(person.get('checked_luggage', False), bool):
+                raise ValueError('Checked luggage must be true or false.')
+            row['checked_luggage'] = person.get('checked_luggage', False)
             for key in ['departure_date', 'return_date']:
                 row[key] = date.fromisoformat(str(person.get(key, '')))
             for key in ['departure_time', 'return_time']:

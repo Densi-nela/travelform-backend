@@ -20,17 +20,19 @@ def build_email_context(item, attachments):
                 else 'applicant' if recipient == trip.applicant_email.lower()
                 else 'supervisor' if recipient == trip.supervisor_email.lower() else 'traveller')
     templates = {'applicant_receipt': 'applicant_receipt.html', 'supervisor_review': 'supervisor_review.html',
-                 'decision': 'applicant_supervisor_decision.html', 'admin_review': 'admin_action_required.html'}
+                 'decision': 'applicant_supervisor_decision.html', 'admin_review': 'admin_action_required.html', 'tickets': 'traveller_tickets.html'}
     template = templates.get(event)
     if event == 'admin_decision':
         template = f'{role}_final_decision.html'
     if not template:
         raise ValueError('Unknown travel email event.')
+    if event == 'tickets':
+        role = 'traveller'
     # Only the main contact, reviewers and admins see the complete submitted form.
     visible_people = own if role == 'traveller' else people
     reference = f'APA-{str(trip.pk)[:8].upper()}'
     title = {'applicant_receipt': 'Travel request received', 'supervisor_review': 'Travel request for your review',
-             'admin_review': 'Travel request needs admin approval',
+             'admin_review': 'Travel request needs admin approval', 'tickets': 'Your travel tickets',
              'decision': 'Supervisor approved your request' if status == 'awaiting_admin' else 'Supervisor declined your request',
              'admin_decision': 'Travel request approved' if status == 'approved' else 'Travel request declined'}[event]
     greeting = ('Travel administrator' if role == 'admin' else 'Supervisor' if role == 'supervisor'

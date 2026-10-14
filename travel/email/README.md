@@ -36,13 +36,12 @@ NOTIFICATION_MODE=live
 AWS_REGION=your-aws-region
 NOTIFICATION_SQS_QUEUE_NAME=notifications-email-queue
 NOTIFICATION_SQS_QUEUE_URL=
-TRAVEL_ADMIN_EMAILS=travel-desk@your-company.example
 NOTIFICATION_API_URL=http://notification-apis-service.service.apainsurance.ke:8080
 FRONTEND_URL=https://travel.your-company.example
 APA_LOGO_URL=https://www.apainsurance.org/images/AppResources/Apollo_Logo.png
 ```
 
-`TRAVEL_ADMIN_EMAILS` accepts a comma-separated list or distribution-list address. It is empty by default because no admin recipient has been supplied. Configure it before taking new approval actions. With no recipients configured, no admin email is created; the dashboard still shows requests awaiting admin action. Existing records are not automatically backfilled with admin notifications.
+Travel-admin recipients come from active Django users with the Travel admin role and a valid email address. Developers, inactive accounts and accounts without an email are excluded. Manage accounts through `/django-admin/auth/user/`. New events use the current user list; historical outbox records retain their original recipients.
 
 `NOTIFICATION_MODE=console` remains the development default and sends nothing. Logs show delivery metadata only, excluding message contents, private review URLs and file data. `live` enables the real transports. The old `api` mode is accepted as an alias for `live`; the routing flag still selects the transport for attachment-free messages.
 
