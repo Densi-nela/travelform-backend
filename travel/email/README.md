@@ -94,7 +94,7 @@ Requests use a 15-second timeout and propagate HTTP/network failures to the dura
 - `travel/email/messages.py`: recipient scope, stage-specific template selection, Django context and HTML/plain-text rendering.
 - `travel/email/transports.py`: queue mapping, AWS SQS publishing and the custom attachment function.
 - `travel/notifications.py`: durable outbox dispatch, delivery attempts and admin-recipient fan-out. The original workflow hook `send_notification_email` is retained and receives the rendered `email` envelope.
-- `travel/views.py`: creates outbox records in the request/decision transaction.
+- `travel/views/submissions.py`, `approvals.py`, and `tickets.py`: create outbox records inside their workflow transactions.
 - `travel/templates/travel/email/`: Django templates discovered through the app template loader.
 
 Requests and outbox records commit together. Initial delivery is attempted after commit; failures remain retryable with a sanitized error class. Run `uv run --locked python manage.py retry_notifications` from one scheduled worker. Network retries and standard SQS can produce duplicates or out-of-order messages, so the consumer must deduplicate on `event_id`. A retry preserves the original stage and recorded messages rather than turning an old receipt into a later decision.

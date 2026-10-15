@@ -109,7 +109,7 @@ CSRF_TRUSTED_ORIGINS = [
 if not CSRF_TRUSTED_ORIGINS:
     raise ValueError("CSRF_TRUSTED_ORIGINS must contain at least one valid origin.")
 
-CSRF_FAILURE_VIEW = "travel.views.csrf_failure"
+CSRF_FAILURE_VIEW = "travel.views.common.csrf_failure"
 
 env_cors_allowed_origins = [
     origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()

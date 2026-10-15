@@ -25,7 +25,7 @@ class TravelWorkflowTests(TestCase):
         self.assertEqual(response["Cache-Control"], "no-store")
 
     @patch(
-        "travel.views.TravelRequest.objects.exists",
+        "travel.views.sessions.TravelRequest.objects.exists",
         side_effect=DatabaseError("private database detail"),
     )
     def test_health_reports_database_unavailable_without_details(self, exists):
