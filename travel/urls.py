@@ -1,30 +1,41 @@
+"""API routes for public applications and the travel administration portal."""
+
 from django.urls import path
-from . import views, portal_management
+
+from . import portal_management, views
 
 urlpatterns = [
-    path('admin/departments/', portal_management.departments),
-    path('admin/departments/<int:pk>/', portal_management.departments),
-    path('admin/users/', portal_management.users),
-    path('admin/users/<int:pk>/', portal_management.users),
-    path('admin/requests/<uuid:pk>/send-tickets/', views.send_tickets),
-    path('departments/', views.department_options),
-    path('admin/requests/<uuid:pk>/documents/<int:document_id>/', views.supporting_document_download),
-    path('review/<uuid:token>/requests/<uuid:pk>/documents/<int:document_id>/', views.supporting_document_download),
-    path('admin/notifications/', views.undelivered_notifications),
-    path('admin/requests/<uuid:pk>/notifications/<int:notification_id>/retry/', views.retry_notification),
-    path('admin/requests/new/', views.admin_submit),
-    path('admin/requests/<uuid:pk>/decision/', views.admin_decision),
-    path('admin/requests/<uuid:pk>/travellers/<int:traveller_id>/tickets/', views.upload_ticket),
-    path('admin/tickets/<int:pk>/', views.ticket_detail),
-    path('health/', views.health),
-    path('admin/analytics/', views.analytics),
-    path('session/', views.session), 
-    path('login/', views.sign_in), 
-    path('logout/', views.sign_out),
-    path('requests/', views.submit), 
-    path('review/<uuid:token>/', views.review),
-    path('admin/requests/', views.requests_list), 
-    path('admin/requests/<uuid:pk>/', views.request_detail),
-    path('admin/metrics/', views.metrics), 
-    path('admin/people/', views.person_history),
+    path("admin/departments/", portal_management.departments),
+    path("admin/departments/<int:pk>/", portal_management.departments),
+    path("admin/users/", portal_management.users),
+    path("admin/users/<int:pk>/", portal_management.users),
+    path("admin/requests/<uuid:pk>/send-tickets/", views.send_tickets),
+    path("departments/", views.department_options),
+    path(
+        "admin/requests/<uuid:pk>/documents/<int:document_id>/", views.supporting_document_download
+    ),
+    path(
+        "review/<uuid:token>/requests/<uuid:pk>/documents/<int:document_id>/",
+        views.supporting_document_download,
+    ),
+    path("admin/notifications/", views.undelivered_notifications),
+    path(
+        "admin/requests/<uuid:pk>/notifications/<int:notification_id>/retry/",
+        views.retry_notification,
+    ),
+    path("admin/requests/new/", views.admin_submit),
+    path("admin/requests/<uuid:pk>/decision/", views.admin_decision),
+    path("admin/requests/<uuid:pk>/travellers/<int:traveller_id>/tickets/", views.upload_ticket),
+    path("admin/tickets/<int:pk>/", views.ticket_detail),
+    path("health/", views.health),
+    path("admin/analytics/", views.analytics),
+    path("session/", views.session),
+    path("login/", views.sign_in),
+    path("logout/", views.sign_out),
+    path("requests/", views.submit),
+    path("review/<uuid:token>/", views.review),
+    path("admin/requests/", views.requests_list),
+    path("admin/requests/<uuid:pk>/", views.request_detail),
+    path("admin/metrics/", views.metrics),
+    path("admin/people/", views.person_history),
 ]

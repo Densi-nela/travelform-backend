@@ -1,14 +1,15 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / '.env')
+load_dotenv(BASE_DIR / ".env")
 
 # Always defaults to false if not explicitly set
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-SECRET_KEY = os.getenv('SECRET_KEY')
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 # If DEBUG is false, ensure SECRET_KEY is present, not empty, and not the placeholder
 if not DEBUG and (not SECRET_KEY or SECRET_KEY == "replace-with-a-long-random-secret"):
@@ -16,16 +17,13 @@ if not DEBUG and (not SECRET_KEY or SECRET_KEY == "replace-with-a-long-random-se
 
 
 env_allowed_hosts = [
-    host.strip()
-    for host in os.getenv("ALLOWED_HOSTS", "").split(",")
-    if host.strip()
+    host.strip() for host in os.getenv("ALLOWED_HOSTS", "").split(",") if host.strip()
 ]
 
 if DEBUG:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"] + env_allowed_hosts
 else:
     ALLOWED_HOSTS = env_allowed_hosts
-
 
 
 INSTALLED_APPS = [
@@ -35,68 +33,67 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
     # Custom Apps
     "travel",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'travel.middleware.PrivateApiMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "travel.middleware.PrivateApiMiddleware",
 ]
 
 
-ROOT_URLCONF = 'config.urls'
+ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
-WSGI_APPLICATION = 'config.wsgi.application'
+WSGI_APPLICATION = "config.wsgi.application"
 
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.getenv('DB_PATH', BASE_DIR / 'db.sqlite3'),
-        'OPTIONS': {
-            'timeout': 20,
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": os.getenv("DB_PATH", BASE_DIR / "db.sqlite3"),
+        "OPTIONS": {
+            "timeout": 20,
         },
     },
 }
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
 ]
 
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Africa/Nairobi'
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "Africa/Nairobi"
 USE_TZ = True
 
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # =============================================================================
@@ -104,22 +101,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # =============================================================================
 # Configure frontend integration, trusted CSRF origins, secure cookies,
 # HTTP security headers, and request upload limits.
-FRONTEND_URL = os.environ['FRONTEND_URL'].rstrip('/')
+FRONTEND_URL = os.environ["FRONTEND_URL"].rstrip("/")
 CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ['CSRF_TRUSTED_ORIGINS'].split(',')
-    if origin.strip()
+    origin.strip() for origin in os.environ["CSRF_TRUSTED_ORIGINS"].split(",") if origin.strip()
 ]
 
 if not CSRF_TRUSTED_ORIGINS:
     raise ValueError("CSRF_TRUSTED_ORIGINS must contain at least one valid origin.")
 
-CSRF_FAILURE_VIEW = 'travel.views.csrf_failure'
+CSRF_FAILURE_VIEW = "travel.views.csrf_failure"
 
 env_cors_allowed_origins = [
-    origin.strip()
-    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
-    if origin.strip()
+    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()
 ]
 
 frontend_url = os.getenv("FRONTEND_URL", "").strip()
@@ -143,8 +136,7 @@ else:
 # information, and rely on Django's defaults for other security headers.
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
-SECURE_REFERRER_POLICY = 'same-origin'
-
+SECURE_REFERRER_POLICY = "same-origin"
 
 
 # =============================================================================
@@ -155,40 +147,42 @@ SECURE_REFERRER_POLICY = 'same-origin'
 # AWS SQS can optionally be configured for emails without attachments.
 #
 # Modes: 'console' logs notifications to the terminal; 'live' sends actual emails.
-NOTIFICATION_MODE = os.getenv('NOTIFICATION_MODE', 'console')
+NOTIFICATION_MODE = os.getenv("NOTIFICATION_MODE", "console")
 
-# When enabled, routes all emails through the Notification Service API and does not involve aws SQS - (defult = false)
-NOTIFICATION_USE_API_FOR_ALL_EMAILS = os.getenv('NOTIFICATION_USE_API_FOR_ALL_EMAILS', 'false').strip().lower() == 'true' #
+# Route all emails through the internal API when enabled; defaults to false.
+NOTIFICATION_USE_API_FOR_ALL_EMAILS = (
+    os.getenv("NOTIFICATION_USE_API_FOR_ALL_EMAILS", "false").strip().lower() == "true"
+)
 
 # Internal Notification Service API configuration.
-NOTIFICATION_API_URL = os.getenv('NOTIFICATION_API_URL', '').strip().rstrip('/')
-NOTIFICATION_API_TOKEN = os.getenv('NOTIFICATION_API_TOKEN', '')
+NOTIFICATION_API_URL = os.getenv("NOTIFICATION_API_URL", "").strip().rstrip("/")
+NOTIFICATION_API_TOKEN = os.getenv("NOTIFICATION_API_TOKEN", "")
 
 
 # =============================================================================
 # AWS SQS EMAIL NOTIFICATIONS
 # =============================================================================
-# Ideally, emails without attatchments should use SQS and not sent via the api, thats why NOTIFICATION_USE_API_FOR_ALL_EMAILS is false by default
-# The internal Notification Service API is best suited for emails with attachments, although it can also send email without attachments.
-# AWS SQS queues email notifications thus best for scalability.
+# Emails without attachments use SQS unless the API override is enabled.
+# Ticket emails always use the internal API. SQS decouples notification
+# processing from the travel application.
 
-NOTIFICATION_AWS_REGION = os.getenv('AWS_REGION', '')
-NOTIFICATION_SQS_QUEUE_NAME = os.getenv('NOTIFICATION_SQS_QUEUE_NAME', 'notifications-email-queue')
-NOTIFICATION_SQS_QUEUE_URL = os.getenv('NOTIFICATION_SQS_QUEUE_URL', '')
+NOTIFICATION_AWS_REGION = os.getenv("AWS_REGION", "")
+NOTIFICATION_SQS_QUEUE_NAME = os.getenv("NOTIFICATION_SQS_QUEUE_NAME", "notifications-email-queue")
+NOTIFICATION_SQS_QUEUE_URL = os.getenv("NOTIFICATION_SQS_QUEUE_URL", "")
 
 
 # Apa Logo
-APA_LOGO_URL = 'https://www.apainsurance.org/images/AppResources/Apollo_Logo.png'
+APA_LOGO_URL = "https://www.apainsurance.org/images/AppResources/Apollo_Logo.png"
 
 # =============================================================================
 # AWS S3 — PRIVATE APPLICATION SUPPORTING DOCUMENTS
 # =============================================================================
 # Uses the same standard AWS credential chain as SQS (role, profile or environment).
-TRAVEL_S3_BUCKET = os.getenv('TRAVEL_S3_BUCKET', '').strip()
-TRAVEL_S3_REGION = os.getenv('TRAVEL_S3_REGION', os.getenv('AWS_REGION', '')).strip()
-TRAVEL_S3_PREFIX = os.getenv('TRAVEL_S3_PREFIX', 'travel/supporting-documents').strip('/')
+TRAVEL_S3_BUCKET = os.getenv("TRAVEL_S3_BUCKET", "").strip()
+TRAVEL_S3_REGION = os.getenv("TRAVEL_S3_REGION", os.getenv("AWS_REGION", "")).strip()
+TRAVEL_S3_PREFIX = os.getenv("TRAVEL_S3_PREFIX", "travel/supporting-documents").strip("/")
 # Optional KMS key ARN. Without it uploads use S3-managed AES256 encryption.
-TRAVEL_S3_KMS_KEY_ID = os.getenv('TRAVEL_S3_KMS_KEY_ID', '').strip()
+TRAVEL_S3_KMS_KEY_ID = os.getenv("TRAVEL_S3_KMS_KEY_ID", "").strip()
 TRAVEL_S3_DOWNLOAD_TTL = 300
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1_048_576
 DATA_UPLOAD_MAX_NUMBER_FILES = 50
