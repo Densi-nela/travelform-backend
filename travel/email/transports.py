@@ -53,7 +53,7 @@ def send_email_via_api(email, attachments=None):
     """Shared internal API adapter for plain emails and ticket emails.
 
     email contains recipient, subject, html_body and text_body. Each attachment
-    contains filename, content_type and content_base64. Raise on delivery failure.
+    contains filename, content_type and raw content bytes. Raise on delivery failure.
     """
     base_url = settings.NOTIFICATION_API_URL.strip().rstrip("/")
     if not base_url:
@@ -66,17 +66,16 @@ def send_email_via_api(email, attachments=None):
     else:
         endpoint = "sendEmailMultiAttachment"
         payload.update(
-            emailAddress=email["recipient"],
+            emailTo=email["recipient"],
             attachments=[
                 {
-                    "fileName": item["filename"],
-                    "contentType": item["content_type"],
-                    "data": item["content_base64"],
+                    "name": item["filename"],
+                    "bytes": list(item["content"]),
                 }
                 for item in attachments
             ],
         )
-    # The outbox already base64-encodes ticket bytes; do not encode them again.
+    # JSON represents the file bytes as integers (0-255), not a Base64 string.
     headers = {"Content-Type": "application/json"}
     # The supplied API contract does not require authentication. Retain optional
     # bearer-token support for deployments whose gateway requires it.

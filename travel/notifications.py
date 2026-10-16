@@ -1,6 +1,5 @@
 """Durable notification delivery and retries; content and transports live in travel.email."""
 
-import base64
 import logging
 from datetime import timedelta
 
@@ -82,7 +81,7 @@ def deliver(notification_id):
             {
                 "filename": t.filename,
                 "content_type": t.content_type,
-                "content_base64": base64.b64encode(bytes(t.content)).decode("ascii"),
+                "content": bytes(t.content),
             }
             for t in Ticket.objects.filter(
                 pk__in=item.payload.get("ticket_ids", [])

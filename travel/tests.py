@@ -646,7 +646,7 @@ class TravelWorkflowTests(TestCase):
             {
                 "filename": "ticket.pdf",
                 "content_type": "application/pdf",
-                "content_base64": "JVBERi0=",
+                "content": b"%PDF-",
             }
         ]
         dispatch_email(email, files)
@@ -933,25 +933,32 @@ class TravelWorkflowTests(TestCase):
             {
                 "filename": "ticket.pdf",
                 "content_type": "application/pdf",
-                "content_base64": "JVBERi0=",
+                "content": b"%PDF-",
             },
-            {"filename": "document.png", "content_type": "image/png", "content_base64": "cmV0dXJu"},
+            {
+                "filename": "document.png",
+                "content_type": "image/png",
+                "content": b"\x00\x7f\x80\xff",
+            },
         ]
         mapped = [
-            {"fileName": "ticket.pdf", "contentType": "application/pdf", "data": "JVBERi0="},
-            {"fileName": "document.png", "contentType": "image/png", "data": "cmV0dXJu"},
+            {
+                "name": "ticket.pdf",
+                "bytes": [37, 80, 68, 70, 45],
+            },
+            {"name": "document.png", "bytes": [0, 127, 128, 255]},
         ]
         cases = [
             ([], "sendEmail", {**common, "emailAddress": email["recipient"]}),
             (
                 files[:1],
                 "sendEmailMultiAttachment",
-                {**common, "emailAddress": email["recipient"], "attachments": mapped[:1]},
+                {**common, "emailTo": email["recipient"], "attachments": mapped[:1]},
             ),
             (
                 files,
                 "sendEmailMultiAttachment",
-                {**common, "emailAddress": email["recipient"], "attachments": mapped},
+                {**common, "emailTo": email["recipient"], "attachments": mapped},
             ),
         ]
         for attachments, endpoint, expected in cases:
@@ -1091,8 +1098,6 @@ class TravelWorkflowTests(TestCase):
     @override_settings(NOTIFICATION_MODE="live", NOTIFICATION_USE_API_FOR_ALL_EMAILS=True)
     @patch("travel.email.transports.urlopen")
     def test_multiple_uploaded_documents_deliver_to_their_traveller_only(self, open_url):
-        import base64
-
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         open_url.return_value.__enter__.return_value.status = 202
@@ -1102,7 +1107,10 @@ class TravelWorkflowTests(TestCase):
         trip = self.create()
         self.admin()
         person = trip.travellers.get(email="jane@example.com")
-        files = [("Ticket.pdf", b"%PDF-1.7 ticket"), ("Supporting.pdf", b"%PDF-1.7 supporting")]
+        files = [
+            ("Ticket.pdf", b"%PDF-1.7 ticket"),
+            ("Supporting.pdf", b"%PDF-1.7 supporting\x00\x80\xff"),
+        ]
         response = self.client.post(
             f"/api/admin/requests/{trip.pk}/travellers/{person.id}/tickets/",
             {
@@ -1123,7 +1131,9 @@ class TravelWorkflowTests(TestCase):
                     200,
                 )
         sent = {
-            json.loads(c.args[0].data)["emailAddress"]: (
+            json.loads(c.args[0].data).get(
+                "emailTo", json.loads(c.args[0].data).get("emailAddress")
+            ): (
                 c.args[0].full_url,
                 json.loads(c.args[0].data),
             )
@@ -1135,9 +1145,8 @@ class TravelWorkflowTests(TestCase):
             payload["attachments"],
             [
                 {
-                    "fileName": name,
-                    "contentType": "application/pdf",
-                    "data": base64.b64encode(data).decode("ascii"),
+                    "name": name,
+                    "bytes": list(data),
                 }
                 for name, data in files
             ],

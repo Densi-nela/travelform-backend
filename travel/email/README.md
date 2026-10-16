@@ -70,11 +70,11 @@ Map these fields to your consumer's names in **`travel/email/transports.py::buil
 
 The hook **`travel/email/transports.py::send_email_with_attachments(email, attachments)`** is implemented using the shared API adapter. `email` is the rendered envelope above. Each attachment contains:
 
-```json
+```python
 {
   "filename": "Alex-ticket.pdf",
   "content_type": "application/pdf",
-  "content_base64": "<base64 file contents>"
+  "content": b"%PDF-...",
 }
 ```
 
@@ -83,9 +83,9 @@ The adapter posts JSON to the configured base URL using these documented endpoin
 | Attachments for this recipient | Endpoint under `/notification/email/` | Payload |
 | --- | --- | --- |
 | None | `sendEmail` | `emailAddress`, `subject`, `text` |
-| One or multiple | `sendEmailMultiAttachment` | `emailAddress`, `subject`, `text`, `attachments: [{fileName, contentType, data}]` |
+| One or multiple | `sendEmailMultiAttachment` | `emailTo`, `subject`, `text`, `attachments: [{name, bytes}]` |
 
-`text` contains the rendered Django HTML. Ticket contents are already base64-encoded by the outbox and are passed unchanged to `data`, avoiding double encoding. Tickets remain private in the database; no public attachment URL is needed. The service receives only its documented fields, not our internal event/template metadata. Plain text is retained for the SQS envelope but the internal API accepts a single body.
+`text` contains the rendered Django HTML. The outbox reads raw ticket bytes from the database. The API adapter serializes them in `bytes` as a JSON array of integers from 0 to 255 (for example `[37, 80, 68, 70, 45]`), not Base64. Retries read the stored bytes again and use the same array format. Tickets remain private in the database; no public attachment URL is needed. The service receives only its documented fields, not our internal event/template metadata. Plain text is retained for the SQS envelope but the internal API accepts a single body.
 
 Requests use a 15-second timeout and propagate HTTP/network failures to the durable outbox. The supplied contract does not define idempotency support: a retry after a lost response can send a duplicate. API acceptance is not proof of inbox delivery.
 
@@ -150,3 +150,5 @@ Open an application in the admin dashboard and use **Email delivery → Retry em
 A shared database claim prevents overlapping initial, admin and worker sends. Claims expire after ten minutes to recover from a crashed process. The internal service still does not promise idempotency: if it accepts a message but its response is lost, a later retry can duplicate it. Apply migration 0003 before running the updated application.
 
 Admins can select multiple PDF, PNG or JPEG attachments per traveller in one upload. The selection is validated and saved atomically. Limits remain 5 MB per file, 20 MB and 50 files per request. Each recipient receives only their assigned documents. Attachments are encoded in the backend and sent using the updated multi-attachment contract, including when there is just one file. Non-2xx HTTP responses and network failures leave the notification retryable.
+
+Single and multiple attachments use the same `sendEmailMultiAttachment` contract. Attachment requests use `emailTo`; plain emails use `emailAddress`. MIME types remain internal metadata and are not included in the attachment API payload.
