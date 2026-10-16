@@ -2,7 +2,7 @@
 {% block content %}
 {% if direct_admin_approval %}<p>The administrator approved this request directly before supervisor review was completed. No further supervisor action is required.</p>{% endif %}
 <p>The travel administrator has <strong>{% if status == "approved" %}approved{% else %}declined{% endif %}</strong> the travel request submitted by {{ applicant_name }} to {{ destination }}.</p>
-<p><strong>{{ reference }} · {{ status_label }}</strong></p>
+<p><strong>{{ reference }} - {{ status_label }}</strong></p>
 {% if status == "approved" %}<p>The applicant and travellers are being notified separately. Tickets are sent directly to each assigned traveller; other travellers' ticket files are not included in this email.</p>{% else %}<p>The applicant and travellers are being informed of this decision. No further supervisor action is required.</p>{% endif %}
 {% include "travel/email/_notes.html" %}{% if attachments %}{% include "travel/email/_tickets.html" %}{% endif %}{% include "travel/email/_details.html" %}
 {% endblock %}
